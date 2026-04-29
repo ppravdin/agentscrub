@@ -15,6 +15,15 @@ GITLEAKS   = Path.home() / ".local/bin/gitleaks"
 TRUFFLEHOG = Path.home() / ".local/bin/trufflehog"
 TITUS      = Path.home() / ".local/bin/titus"
 
+_LOW_SIGNAL_TYPES = frozenset({
+    "Coveralls Repo Identifier",
+    "Datadog Site Domain",
+    "Metabase",
+    "Privacy",
+    "Supabase Project URL",
+    "Uri",
+})
+
 
 def _gitleaks(d: Path) -> dict[str, str]:
     """Returns {secret_value: rule_id}."""
@@ -146,7 +155,7 @@ def top_types(by_tool: dict[str, dict[str, str]], n: int = 6) -> list[tuple[str,
         merged.update(d)
     counts: collections.Counter[str] = collections.Counter(
         label for secret, label in merged.items()
-        if len(secret) >= 8 and not secret.isspace()
+        if len(secret) >= 8 and not secret.isspace() and label not in _LOW_SIGNAL_TYPES
     )
     return counts.most_common(n)
 

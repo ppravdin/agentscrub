@@ -94,37 +94,242 @@ def _write_scan_report(
     flagged: list[Path],
     preserved: list[Path],
     findings_by_file: dict[Path, list[dict[str, object]]],
-) -> Path:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    path = LOG_DIR / f"scan-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
+    source_file_counts: list[tuple[str, int, int]],
+    total_scanned_files: int,
+    unique_patterns: int,
+) -> tuple[Path, Path]:
+    from .redact import is_low_signal_label
 
-    def _write_group(fh, title: str, files: list[Path]) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    created = datetime.now()
+    stamp = created.strftime('%Y%m%d-%H%M%S')
+    summary_path = LOG_DIR / f"scan-{stamp}-summary.txt"
+    full_path = LOG_DIR / f"scan-{stamp}-full.txt"
+
+    def _file_stats(fp: Path) -> tuple[int, int, int, list[dict[str, object]], list[dict[str, object]]]:
+        findings = findings_by_file.get(fp, [])
+        credential = [f for f in findings if not is_low_signal_label(str(f["type"]))]
+        noisy = [f for f in findings if is_low_signal_label(str(f["type"]))]
+        hits = sum(int(f["hits"]) for f in findings)
+        credential_hits = sum(int(f["hits"]) for f in credential)
+        return len(credential), credential_hits, hits, credential, noisy
+
+    stats_by_file = {fp: _file_stats(fp) for fp in [*flagged, *preserved]}
+
+    def _priority(files: list[Path]) -> list[Path]:
+        return sorted(
+            files,
+            key=lambda fp: (
+                -stats_by_file.get(fp, (0, 0, 0, [], []))[0],
+                -stats_by_file.get(fp, (0, 0, 0, [], []))[1],
+                -stats_by_file.get(fp, (0, 0, 0, [], []))[2],
+                _relative_label(fp, targets)[1],
+            ),
+        )
+
+    def _source_counts(files: list[Path]) -> dict[str, tuple[int, int, int]]:
+        counts: dict[str, tuple[int, int, int]] = {}
+        for fp in files:
+            source, _ = _relative_label(fp, targets)
+            credential_unique, credential_hits, _, _, _ = stats_by_file.get(fp, (0, 0, 0, [], []))
+            old_files, old_unique, old_hits = counts.get(source, (0, 0, 0))
+            counts[source] = (
+                old_files + 1,
+                old_unique + credential_unique,
+                old_hits + credential_hits,
+            )
+        return counts
+
+    def _pattern_counts(files: list[Path]) -> list[tuple[str, int, int]]:
+        by_type: dict[str, tuple[set[Path], int]] = {}
+        for fp in files:
+            for finding in findings_by_file.get(fp, []):
+                label = str(finding["type"])
+                if is_low_signal_label(label):
+                    continue
+                files_seen, hits_n = by_type.get(label, (set(), 0))
+                files_seen.add(fp)
+                by_type[label] = (files_seen, hits_n + int(finding["hits"]))
+        return sorted(
+            ((label, len(files_seen), hits_n) for label, (files_seen, hits_n) in by_type.items()),
+            key=lambda row: (-row[1], -row[2], row[0].lower()),
+        )
+
+    def _write_table_line(fh, left: str, middle: str, right: str = "") -> None:
+        if right:
+            fh.write(f"{left:<30} {middle:>12} {right}\n")
+        else:
+            fh.write(f"{left:<30} {middle}\n")
+
+    def _write_findings(
+        fh,
+        findings: list[dict[str, object]],
+        *,
+        indent: str = "  ",
+        limit: int | None = None,
+    ) -> None:
+        ordered = sorted(findings, key=lambda f: (-int(f["hits"]), str(f["type"]).lower(), str(f["proof"])))
+        selected = ordered[:limit] if limit else ordered
+        for finding in selected:
+            fh.write(
+                f"{indent}- {finding['type']}  hits={finding['hits']}  "
+                f"proof={finding['proof']}\n"
+            )
+        if limit and len(ordered) > limit:
+            fh.write(f"{indent}... {len(ordered) - limit:,} more findings in full audit\n")
+
+    def _write_file_block(
+        fh,
+        fp: Path,
+        *,
+        credential_limit: int | None = None,
+        noisy_limit: int | None = None,
+    ) -> None:
+        source, rel = _relative_label(fp, targets)
+        credential_unique, credential_hits, hits, credential, noisy = _file_stats(fp)
+        fh.write(f"\n[{source}] {rel}\n")
+        fh.write(
+            f"credential_findings={credential_unique} "
+            f"credential_hits={credential_hits} total_hits={hits}\n"
+        )
+        if credential:
+            _write_findings(fh, credential, limit=credential_limit)
+        if noisy:
+            fh.write("  low_signal_matches:\n")
+            _write_findings(fh, noisy, indent="    ", limit=noisy_limit)
+
+    def _write_group(
+        fh,
+        title: str,
+        files: list[Path],
+        *,
+        limit: int | None = None,
+        credential_limit: int | None = None,
+        noisy_limit: int | None = None,
+        more_hint: str = "in full audit",
+    ) -> None:
         fh.write(f"\n{title}\n")
         fh.write("=" * len(title) + "\n")
         if not files:
             fh.write("none\n")
             return
-        for fp in files:
-            findings = findings_by_file.get(fp, [])
-            source, rel = _relative_label(fp, targets)
-            total_hits = sum(int(f["hits"]) for f in findings)
-            fh.write(f"\n[{source}] {rel}\n")
-            fh.write(f"unique={len(findings)} hits={total_hits}\n")
-            for finding in findings:
-                fh.write(
-                    f"  - {finding['type']}  hits={finding['hits']}  "
-                    f"proof={finding['proof']}\n"
-                )
+        selected = files[:limit] if limit else files
+        for fp in selected:
+            _write_file_block(
+                fh,
+                fp,
+                credential_limit=credential_limit,
+                noisy_limit=noisy_limit,
+            )
+        if limit and len(files) > limit:
+            fh.write(f"\n... {len(files) - limit:,} more files {more_hint}\n")
 
-    with path.open("w", encoding="utf-8") as fh:
-        fh.write("agentscrub scan report\n")
-        fh.write(f"created={datetime.now().isoformat(timespec='seconds')}\n")
-        fh.write("raw_secrets=false\n")
-        fh.write(f"redactable_files={len(flagged)}\n")
-        fh.write(f"managed_credentials_preserved={len(preserved)}\n")
-        _write_group(fh, "Redactable files", flagged)
-        _write_group(fh, "Managed credentials preserved", preserved)
-    return path
+    ordered_flagged = _priority(flagged)
+    ordered_preserved = _priority(preserved)
+    preserved_with_credentials = [fp for fp in ordered_preserved if stats_by_file.get(fp, (0, 0, 0, [], []))[0]]
+    preserved_low_signal_only = [fp for fp in ordered_preserved if not stats_by_file.get(fp, (0, 0, 0, [], []))[0]]
+    total_credential_unique = sum(stats_by_file.get(fp, (0, 0, 0, [], []))[0] for fp in flagged)
+    total_credential_hits = sum(stats_by_file.get(fp, (0, 0, 0, [], []))[1] for fp in flagged)
+    total_hits = sum(stats_by_file.get(fp, (0, 0, 0, [], []))[2] for fp in flagged)
+    source_counts = _source_counts(flagged)
+    pattern_counts = _pattern_counts(flagged)
+
+    def _write_header(fh, title: str) -> None:
+        fh.write(f"{title}\n")
+        fh.write(f"created: {created.isoformat(timespec='seconds')}\n")
+        fh.write("raw credentials are never printed in reports\n")
+        fh.write("credential proof: detector type plus safe hash; harmless non-credential matches may show verbatim\n")
+
+    def _write_result(fh) -> None:
+        pct = (len(flagged) / total_scanned_files * 100) if total_scanned_files else 0
+        fh.write("\nResult\n")
+        fh.write("======\n")
+        fh.write(f"Files to redact:              {len(flagged):,} / {total_scanned_files:,} ({pct:.1f}%)\n")
+        fh.write(f"Secret-like patterns found:   {unique_patterns:,}\n")
+        fh.write(f"Live auth/MCP files skipped:  {len(preserved):,}\n")
+        fh.write("Files changed by this scan:   0 (read-only)\n")
+        fh.write("\nRun next\n")
+        fh.write("========\n")
+        fh.write(f"agentscrub run        redact {len(flagged):,} files after confirmation\n")
+        fh.write("agentscrub run --yes  redact immediately, no prompt\n")
+        fh.write("\nWhat is protected\n")
+        fh.write("=================\n")
+        fh.write("- Raw credentials are not printed and there is no report mode that dumps them.\n")
+        fh.write("- Proof hashes let you recognize the same secret across files without exposing it.\n")
+        if preserved:
+            fh.write("- Live auth/MCP credential stores are listed below but skipped by default.\n")
+        fh.write("- A backup is created before redaction; the last 5 backups are kept.\n")
+
+    def _write_by_tool(fh) -> None:
+        if not source_file_counts:
+            return
+        fh.write("\nBy tool\n")
+        fh.write("=======\n")
+        fh.write(f"{'Tool':<28} {'Files to redact':>16} {'Scanned':>10} {'Share':>8}\n")
+        fh.write(f"{'-' * 28} {'-' * 16:>16} {'-' * 10:>10} {'-' * 8:>8}\n")
+        for source, affected, scanned in source_file_counts:
+            pct = (affected / scanned * 100) if scanned else 0
+            fh.write(f"{source:<28} {affected:>16,} {scanned:>10,} {pct:>7.1f}%\n")
+
+    def _write_source_rollup(fh) -> None:
+        if source_counts:
+            fh.write("\nAudit counts\n")
+            fh.write("============\n")
+            fh.write("finding = one file containing one distinct credential-like pattern\n")
+            fh.write("hit = total occurrences of those patterns in files\n")
+            fh.write(f"credential-like findings across redactable files: {total_credential_unique:,}\n")
+            fh.write(f"credential-like hits across redactable files: {total_credential_hits:,}\n")
+            if total_hits != total_credential_hits:
+                fh.write(f"all detector hits including low-signal matches: {total_hits:,}\n")
+            fh.write("\n")
+            fh.write(f"{'Source':<28} {'Files':>8} {'Findings':>10} {'Hits':>10}\n")
+            fh.write(f"{'-' * 28} {'-' * 8:>8} {'-' * 10:>10} {'-' * 10:>10}\n")
+            for source, (files_n, unique_n, hits_n) in sorted(source_counts.items(), key=lambda row: (-row[1][0], row[0])):
+                fh.write(f"{source:<28} {files_n:>8,} {unique_n:>10,} {hits_n:>10,}\n")
+
+    def _write_pattern_rollup(fh) -> None:
+        if pattern_counts:
+            fh.write("\nTop credential-like pattern types\n")
+            fh.write("=================================\n")
+            fh.write(f"{'Type':<32} {'Files':>8} {'Hits':>10}\n")
+            fh.write(f"{'-' * 32} {'-' * 8:>8} {'-' * 10:>10}\n")
+            for label, files_n, hits_n in pattern_counts[:20]:
+                fh.write(f"{label:<32} {files_n:>8,} {hits_n:>10,}\n")
+            if len(pattern_counts) > 20:
+                fh.write(f"... {len(pattern_counts) - 20:,} more pattern types in full audit\n")
+
+    def _write_preserved(fh) -> None:
+        _write_group(fh, "Managed credential files preserved - credential findings", preserved_with_credentials)
+        _write_group(fh, "Managed credential files preserved - low-signal only", preserved_low_signal_only)
+
+    with summary_path.open("w", encoding="utf-8") as fh:
+        _write_header(fh, "agentscrub scan summary")
+        fh.write(f"full audit: {full_path}\n")
+        _write_result(fh)
+        _write_by_tool(fh)
+        _write_source_rollup(fh)
+        _write_pattern_rollup(fh)
+        _write_preserved(fh)
+        _write_group(
+            fh,
+            "Highest priority redactable files",
+            ordered_flagged,
+            limit=25,
+            credential_limit=12,
+            noisy_limit=5,
+            more_hint=f"in full audit: {full_path}",
+        )
+
+    with full_path.open("w", encoding="utf-8") as fh:
+        _write_header(fh, "agentscrub full scan audit")
+        fh.write(f"summary report: {summary_path}\n")
+        _write_result(fh)
+        _write_by_tool(fh)
+        _write_source_rollup(fh)
+        _write_preserved(fh)
+        _write_group(fh, "Full redactable file audit", ordered_flagged)
+
+    return summary_path, full_path
 
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
@@ -502,7 +707,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             print(f"\nManaged credentials preserved: {len(preserved):,} file(s)", flush=True)
 
     findings_by_file: dict[Path, list[dict[str, object]]] = {}
-    report_path: Path | None = None
+    summary_report_path: Path | None = None
+    full_report_path: Path | None = None
     if flagged or preserved:
         if RICH:
             with Progress(
@@ -517,11 +723,17 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                     fp: file_findings(all_secrets, fp, _all_typed)
                     for fp in [*flagged, *preserved]
                 }
-                report_path = _write_scan_report(
+                summary_report_path, full_report_path = _write_scan_report(
                     targets=targets,
                     flagged=flagged,
                     preserved=preserved,
                     findings_by_file=findings_by_file,
+                    source_file_counts=[
+                        (t.display, flagged_per_target[t], files_per_target[t])
+                        for t in targets
+                    ],
+                    total_scanned_files=len(redactable_files),
+                    unique_patterns=len(all_secrets),
                 )
         else:
             print("  writing detailed scan report...", flush=True)
@@ -529,14 +741,21 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 fp: file_findings(all_secrets, fp, _all_typed)
                 for fp in [*flagged, *preserved]
             }
-            report_path = _write_scan_report(
+            summary_report_path, full_report_path = _write_scan_report(
                 targets=targets,
                 flagged=flagged,
                 preserved=preserved,
                 findings_by_file=findings_by_file,
+                source_file_counts=[
+                    (t.display, flagged_per_target[t], files_per_target[t])
+                    for t in targets
+                ],
+                total_scanned_files=len(redactable_files),
+                unique_patterns=len(all_secrets),
             )
 
-        p(f"\n[bold]Detailed report[/bold]  [dim]{report_path}[/dim]")
+        p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
+        p(f"[bold]Full audit[/bold]      [dim]{full_report_path}[/dim]")
 
     if not flagged:
         if preserved:

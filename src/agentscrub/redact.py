@@ -109,7 +109,6 @@ def grep_filter(secrets: set[str], files: list[Path]) -> list[Path]:
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write("\n".join(secrets))
-        # Batch to stay under ARG_MAX (~2 MB) on big trees.
         BATCH = 5000
         hits: list[str] = []
         for i in range(0, len(files), BATCH):
@@ -141,6 +140,7 @@ _LABEL_MAP: dict[str, str] = {
     "anthropic-api-key": "Anthropic Key",
     "generic-api-key": "API Key", "generic-secret": "Secret",
     "generic api key": "API Key", "generic secret": "Secret",
+    "generic password": "Password",
     "private-key": "Private Key", "privatekey": "Private Key",
     "ssh-private-key": "SSH Key",
     "aws-access-token": "AWS Key", "aws": "AWS Key",
@@ -151,11 +151,27 @@ _LABEL_MAP: dict[str, str] = {
     "credentials in a url": "URL Credential",
     "credentials in postgresql connection uri": "Postgres URI",
     "database-url": "DB URL",
+    "json web token (base64url encoded)": "JWT",
+    "json-web-token-base64url-encoded": "JWT",
+    "json web token base64url encoded": "JWT",
     "sourcegraph access token": "Sourcegraph",
     "sourcegraph-access-token": "Sourcegraph", "sourcegraph": "Sourcegraph",
     "linkedin access token": "LinkedIn Token",
     "linkedin-access-token": "LinkedIn Token", "linkedin": "LinkedIn Token",
     "dockerhub": "DockerHub",
+    "npmtoken": "NPM Token",
+    "npm access token (fine grained)": "NPM Token",
+    "npm-access-token-fine-grained": "NPM Token",
+    "npm access token fine grained": "NPM Token",
+    "github secret key": "GitHub Secret",
+    "githuboauth2": "GitHub OAuth",
+    "github personal access token (fine grained permissions)": "GitHub PAT",
+    "google oauth credentials": "Google OAuth",
+    "google oauth client secret": "Google OAuth Secret",
+    "cloudflareapitoken": "Cloudflare Token",
+    "posthog project api key": "PostHog Key",
+    "postmark api token": "Postmark Token",
+    "curl basic authentication credentials": "Basic Auth",
     "unknown": "Secret",
 }
 
@@ -172,11 +188,22 @@ _LOW_SIGNAL_LABELS = frozenset({
 })
 
 
+def is_low_signal_label(label: str) -> bool:
+    """Return true for detector labels that are useful but noisy in summaries."""
+    return label in _LOW_SIGNAL_LABELS
+
+
 def _short_label(label: str) -> str:
     low = label.lower()
     if low in _LABEL_MAP:
         return _LABEL_MAP[low]
     normalized = label.replace("-", " ").replace("_", " ")
+    normalized_low = " ".join(normalized.lower().split())
+    if normalized_low in _LABEL_MAP:
+        return _LABEL_MAP[normalized_low]
+    unwrapped_low = normalized_low.replace("(", "").replace(")", "")
+    if unwrapped_low in _LABEL_MAP:
+        return _LABEL_MAP[unwrapped_low]
     return " ".join(
         w.upper() if w.lower() in _UPPER_WORDS else w.capitalize()
         for w in normalized.split()

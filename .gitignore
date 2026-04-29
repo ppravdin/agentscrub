@@ -1,35 +1,72 @@
-# Python
+# ── Python build / install ─────────────────────────────────────
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg
 *.egg-info/
+.eggs/
 build/
 dist/
+wheels/
+*.whl
+*.tar.gz
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
+.installed.cfg
+MANIFEST
+
+# ── Test / lint / type-check caches ────────────────────────────
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
+.cache/
+.hypothesis/
 .coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
 
-# Virtualenvs
+# ── Virtualenvs ────────────────────────────────────────────────
 .venv/
 venv/
 env/
+ENV/
+.python-version
 
-# Editor / OS
+# ── Editor / OS ────────────────────────────────────────────────
 .vscode/
 .idea/
+.cursor/
 *.swp
+*.swo
+*.swn
+*~
+*.bak
+*.orig
+.netrwhist
 .DS_Store
+Thumbs.db
+Desktop.ini
 
-# Agent / tool metadata — never ship
+# ── Direnv / local env ─────────────────────────────────────────
+.envrc
+.env
+.env.*
+
+# ── AI agent / tool metadata — never ship ──────────────────────
 .claude/
 .codex/
 .agents/
 .mcp.json
 .mcp.local.json
 
-# Local secrets / overrides
+# ── Local config overrides ─────────────────────────────────────
 *.local.toml
 *.local.json
-.env
-.env.*
+
+# ── agentscrub runtime artifacts (in case anyone runs from repo) ─
+.agentscrub/
