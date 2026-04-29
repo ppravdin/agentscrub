@@ -314,7 +314,7 @@ def _write_scan_report(
             fh,
             "Highest priority redactable files",
             ordered_flagged,
-            limit=25,
+            limit=5,
             credential_limit=12,
             noisy_limit=5,
             more_hint=f"in full audit: {full_path}",
