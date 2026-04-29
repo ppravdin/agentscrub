@@ -10,7 +10,7 @@ AI tools like Claude Code, Codex CLI, and Cursor store your entire conversation 
 |---|---|---|
 | Claude Code | `~/.claude/` | JSONL sessions, file-history snapshots |
 | OpenAI Codex CLI | `~/.codex/` | sessions, SQLite trace/state databases |
-| Cursor / VSCode Server | `~/.antigravity-server/` | data files only — binaries/extensions excluded |
+| Cursor / Antigravity | `~/.antigravity-server/`, `~/.cursor/logs` | data files only — binaries/extensions excluded |
 | Aider | `~/.aider/` | |
 | Continue | `~/.continue/` | |
 | Windsurf | `~/.windsurf/` | |
@@ -24,9 +24,15 @@ report matched patterns in files such as `~/.claude/.credentials.json`,
 modify those files. The goal is to remove leaked copies from logs, histories,
 and caches without breaking agent logins or MCP connections.
 
-Each scan or run writes a detailed masked report to `~/.agentscrub/logs/`. The
-report lists every affected file, detected pattern type, hit count, and proof
-hash, but does not include full raw secrets.
+Each scan or run writes two masked reports to `~/.agentscrub/logs/`:
+
+- `scan-...-summary.txt` — human-readable result, top affected tools, preserved
+  auth/MCP files, and the highest-priority files to inspect.
+- `scan-...-full.txt` — complete file-by-file audit with detected pattern type,
+  hit count, and proof hash for every affected file.
+
+Raw credentials are never printed in reports. Proof hashes let you recognize the
+same secret across files without exposing the secret itself.
 
 ## How it finds secrets
 
@@ -48,7 +54,7 @@ Union of all findings → deduplicated. JSON lines are parsed and secrets replac
 pipx install agentscrub
 ```
 
-### Detection tools (required)
+### Detection tools
 
 ```bash
 # gitleaks
@@ -135,7 +141,7 @@ agentscrub rollback
 | Plain prose passwords (`my password is hunter2`) | No pattern; indistinguishable from normal text |
 | Short secrets < 8 chars | Below minimum length for all three tools |
 | Secrets in binary files | Skipped by design |
-| PII (names, phones, addresses) | Needs ML model — run `scan_logs.py` separately |
+| PII (names, phones, addresses) | Out of scope; agentscrub targets credentials and secret-like patterns |
 
 ## Adding a new AI tool
 

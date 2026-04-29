@@ -228,17 +228,17 @@ def _write_scan_report(
     ordered_preserved = _priority(preserved)
     preserved_with_credentials = [fp for fp in ordered_preserved if stats_by_file.get(fp, (0, 0, 0, [], []))[0]]
     preserved_low_signal_only = [fp for fp in ordered_preserved if not stats_by_file.get(fp, (0, 0, 0, [], []))[0]]
-    total_credential_unique = sum(stats_by_file.get(fp, (0, 0, 0, [], []))[0] for fp in flagged)
-    total_credential_hits = sum(stats_by_file.get(fp, (0, 0, 0, [], []))[1] for fp in flagged)
     total_hits = sum(stats_by_file.get(fp, (0, 0, 0, [], []))[2] for fp in flagged)
     source_counts = _source_counts(flagged)
+    total_credential_unique = sum(unique_n for _, unique_n, _ in source_counts.values())
+    total_credential_hits = sum(hits_n for _, _, hits_n in source_counts.values())
     pattern_counts = _pattern_counts(flagged)
 
     def _write_header(fh, title: str) -> None:
         fh.write(f"{title}\n")
         fh.write(f"created: {created.isoformat(timespec='seconds')}\n")
         fh.write("raw credentials are never printed in reports\n")
-        fh.write("credential proof: detector type plus safe hash; harmless non-credential matches may show verbatim\n")
+        fh.write("credential proof: detector type, optional shape marker, and safe hash; harmless non-credential matches may show verbatim\n")
 
     def _write_result(fh) -> None:
         pct = (len(flagged) / total_scanned_files * 100) if total_scanned_files else 0
