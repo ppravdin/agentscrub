@@ -1,0 +1,160 @@
+"""Collect secrets via gitleaks, TruffleHog, and Titus (run in parallel)."""
+from __future__ import annotations
+import base64
+import collections
+import concurrent.futures
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+from .discover import ScanTarget
+
+GITLEAKS   = Path.home() / ".local/bin/gitleaks"
+TRUFFLEHOG = Path.home() / ".local/bin/trufflehog"
+TITUS      = Path.home() / ".local/bin/titus"
+
+
+def _gitleaks(d: Path) -> dict[str, str]:
+    """Returns {secret_value: rule_id}."""
+    if not GITLEAKS.exists():
+        return {}
+    fd, out = tempfile.mkstemp(prefix="agentscrub_gl_", suffix=".json")
+    os.close(fd)
+    try:
+        try:
+            subprocess.run(
+                [str(GITLEAKS), "detect", "--source", str(d),
+                 "--no-git", "--report-format", "json", "--report-path", out],
+                capture_output=True, text=True, timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            return {}
+        s: dict[str, str] = {}
+        try:
+            with open(out) as fh:
+                for h in json.load(fh):
+                    v = h.get("Secret", "").strip()
+                    if v and len(v) >= 8:
+                        s[v] = h.get("RuleID", "unknown")
+        except Exception:
+            pass
+        return s
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+
+
+def _trufflehog(d: Path) -> dict[str, str]:
+    """Returns {secret_value: detector_name}."""
+    if not TRUFFLEHOG.exists():
+        return {}
+    try:
+        r = subprocess.run(
+            [str(TRUFFLEHOG), "filesystem", str(d), "--json", "--no-verification"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return {}
+    s: dict[str, str] = {}
+    for line in r.stdout.splitlines():
+        try:
+            h = json.loads(line)
+            name = h.get("DetectorName", "unknown")
+            for field in ("Raw", "RawV2"):
+                v = h.get(field, "").strip()
+                if v and len(v) >= 8:
+                    s[v] = name
+        except Exception:
+            continue
+    return s
+
+
+def _titus(d: Path) -> dict[str, str]:
+    """Returns {secret_value: rule_name}."""
+    if not TITUS.exists():
+        return {}
+    try:
+        r = subprocess.run(
+            [str(TITUS), "scan", str(d), "--format", "json", "--output", ":memory:"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return {}
+    s: dict[str, str] = {}
+    try:
+        for hit in json.loads(r.stdout):
+            name = (hit.get("rule_name") or hit.get("RuleName") or
+                    hit.get("name") or hit.get("Name") or "unknown")
+            for g in hit.get("Groups", []):
+                try:
+                    v = base64.b64decode(g + "==").decode("utf-8", errors="replace").strip()
+                    if v and len(v) >= 8 and not v.isspace():
+                        s[v] = name
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return s
+
+
+def collect(targets: list[ScanTarget]) -> tuple[set[str], dict[str, int]]:
+    """
+    Run all three tools across all target dirs in parallel.
+    Returns (all_secrets, {tool_name: count}).
+    """
+    by_tool: dict[str, dict[str, str]] = {
+        "gitleaks": {}, "trufflehog": {}, "titus": {},
+    }
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        futs = []
+        for t in targets:
+            futs += [
+                ("gitleaks",   ex.submit(_gitleaks,   t.path)),
+                ("trufflehog", ex.submit(_trufflehog, t.path)),
+                ("titus",      ex.submit(_titus,      t.path)),
+            ]
+        for tool, fut in futs:
+            by_tool[tool].update(fut.result())
+
+    all_secrets = {
+        s for sdict in by_tool.values() for s in sdict
+        if len(s) >= 8 and not s.isspace()
+    }
+    counts = {tool: len(sdict) for tool, sdict in by_tool.items()}
+    return all_secrets, counts
+
+
+def all_typed(by_tool: dict[str, dict[str, str]]) -> dict[str, str]:
+    """Merge all per-tool {secret: label} dicts into one map."""
+    merged: dict[str, str] = {}
+    for d in by_tool.values():
+        merged.update(d)
+    return merged
+
+
+def top_types(by_tool: dict[str, dict[str, str]], n: int = 6) -> list[tuple[str, int]]:
+    """
+    Given the per-tool dicts returned by _gitleaks/_trufflehog/_titus,
+    return the n most common type labels (by unique secret count).
+    """
+    merged: dict[str, str] = {}
+    for d in by_tool.values():
+        merged.update(d)
+    counts: collections.Counter[str] = collections.Counter(
+        label for secret, label in merged.items()
+        if len(secret) >= 8 and not secret.isspace()
+    )
+    return counts.most_common(n)
+
+
+def tools_status() -> list[tuple[str, Path, bool]]:
+    """Return [(display_name, path, installed)] for each detection tool."""
+    return [
+        ("gitleaks",   GITLEAKS,   GITLEAKS.exists()),
+        ("TruffleHog", TRUFFLEHOG, TRUFFLEHOG.exists()),
+        ("Titus",      TITUS,      TITUS.exists()),
+    ]
