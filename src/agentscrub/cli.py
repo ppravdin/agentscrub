@@ -426,19 +426,6 @@ def _print_splash() -> None:
         print(txt, end="")
 
 
-_FIRST_RUN_MARKER = Path.home() / ".agentscrub" / ".welcomed"
-
-
-def _is_first_run() -> bool:
-    return not _FIRST_RUN_MARKER.exists()
-
-
-def _mark_welcomed() -> None:
-    try:
-        _FIRST_RUN_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _FIRST_RUN_MARKER.touch()
-    except OSError:
-        pass
 
 
 # ── doctor ────────────────────────────────────────────────────────────────────
@@ -571,9 +558,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     only_raw     = getattr(ns, "only", []) or []
     max_backups  = getattr(ns, "max_backups", 5)
 
-    if _is_first_run():
-        _print_splash()
-        _mark_welcomed()
+    _print_splash()
 
     only_set: set[str] = set()
     for x in only_raw:
