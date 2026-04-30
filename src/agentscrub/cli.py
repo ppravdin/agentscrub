@@ -947,7 +947,15 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             p("\n[bold green]Clean — no files contain credential patterns.[/bold green]\n")
         return
 
-    # ── most exposed files ────────────────────────────────────────────────────
+    # ── most exposed REDACTABLE files only ────────────────────────────────────
+    # Showing files dominated by loose-rule matches here is what made the
+    # output contradictory: top-5 listed files we wouldn't actually touch.
+    # Build a findings_by_file restricted to high-precision rows, then rank
+    # only the files we'll redact.
+    findings_redactable_only: dict[Path, list[dict[str, object]]] = {
+        fp: [f for f in findings if is_high_precision_label(f["type"])]
+        for fp, findings in findings_by_file.items()
+    }
     if RICH:
         with Progress(
             TextColumn("  "),
@@ -957,12 +965,16 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             transient=True,
         ) as prog:
             prog.add_task("ranking", total=None)
-            exposed = top_exposed(all_secrets, flagged, n=5, type_map=_all_typed, findings_by_file=findings_by_file)
+            exposed = top_exposed(redactable_secrets, flagged_redactable, n=5,
+                                  type_map=_all_typed,
+                                  findings_by_file=findings_redactable_only)
     else:
         print("  ranking files by unique findings...", flush=True)
-        exposed = top_exposed(all_secrets, flagged, n=5, type_map=_all_typed, findings_by_file=findings_by_file)
+        exposed = top_exposed(redactable_secrets, flagged_redactable, n=5,
+                              type_map=_all_typed,
+                              findings_by_file=findings_redactable_only)
     if exposed:
-        p("\n[bold]Files with most unique findings[/bold]\n")
+        p("\n[bold]Top files to redact[/bold]\n")
 
         def _resolve(fp: Path) -> tuple[str, str]:
             for t in targets:
