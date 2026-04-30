@@ -38,8 +38,14 @@ def p(msg: object = "", **kw) -> None:
         print(_MARKUP.sub("", str(msg)), flush=True)
 
 
-def _bars(counts: list[tuple[str, int]], bar_width: int = 20) -> None:
-    """Horizontal bar chart for pattern type counts."""
+def _bars(
+    counts: list[tuple[str, int]],
+    bar_width: int = 20,
+    *,
+    total: int | None = None,
+    count_label: str = "Count",
+) -> None:
+    """Horizontal bar chart. If `total` is given, Share = n/total; otherwise Share = n/sum."""
     if not counts:
         return
 
@@ -53,20 +59,20 @@ def _bars(counts: list[tuple[str, int]], bar_width: int = 20) -> None:
         return " ".join(w.upper() if w.lower() in UPPER else w.capitalize()
                         for w in name.split())
 
-    total   = sum(n for _, n in counts)
+    denom   = total if total else sum(n for _, n in counts)
     max_n   = max(n for _, n in counts)
     display = [(_label(name), n) for name, n in counts]
     w       = max(len(name) for name, _ in display)
 
     if RICH:
-        _CON.print(f"  [dim]{'':{w}} {'Count':>5} {'':{bar_width}} Share[/dim]")
+        _CON.print(f"  [dim]{'':{w}} {count_label:>5} {'':{bar_width}} Share[/dim]")
     else:
-        print(f"  {'':w} {'Count':>5} {'':bar_width} of top", flush=True)
+        print(f"  {'':w} {count_label:>5} {'':bar_width} of top", flush=True)
 
     for name, n in display:
         filled = round(n / max_n * bar_width) if max_n else 0
         bar    = "█" * filled
-        pct    = n / total * 100
+        pct    = (n / denom * 100) if denom else 0
         if RICH:
             _CON.print(
                 f"  [dim]{name:<{w}}[/dim] [bold]{n:>5}[/bold]"
@@ -873,17 +879,25 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 try: fp.relative_to(t.path); redact_per_target[t] += 1; break
                 except ValueError: pass
 
-        # Top redactable token types: normalize the raw detector IDs
-        # ("jwt", "generic-api-key", "npm-token") to pretty labels first,
-        # then filter against _HIGH_PRECISION_LABELS.
-        type_counts_redactable: list[tuple[str, int]] = []
-        type_counts_lowconf: list[tuple[str, int]] = []
-        for raw_label, count in _type_counts:
-            short = _short_label(raw_label)
-            if is_high_precision_label(short):
-                type_counts_redactable.append((short, count))
-            else:
-                type_counts_lowconf.append((short, count))
+        # Build the redactable-types breakdown by FILE count, not token count.
+        # Token counts (45 JWT + 37 DockerHub + 24 NPM = 106) live in different
+        # units from the action ("redact 52 files"), which made the bar chart
+        # look contradictory. File counts use the same unit as the prompt:
+        # each bar = "N of the 52 redactable files contain this token type".
+        # findings_redactable_only is computed below; build it here too.
+        findings_redactable_only_phase2: dict[Path, list[dict[str, object]]] = {
+            fp: [f for f in findings_by_file.get(fp, [])
+                 if is_high_precision_label(f["type"])]
+            for fp in flagged_redactable
+        }
+        files_per_type: dict[str, int] = {}
+        for fp, fl in findings_redactable_only_phase2.items():
+            seen_types = {f["type"] for f in fl}
+            for t in seen_types:
+                files_per_type[t] = files_per_type.get(t, 0) + 1
+        type_counts_redactable = sorted(
+            files_per_type.items(), key=lambda x: -x[1]
+        )[:6]
 
         if RICH:
             _CON.print()
@@ -900,24 +914,22 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                             f"{r/tot*100:.1f}%" if tot else "")
             _CON.print(tbl)
             _CON.print(
-                f"  [bold]{len(flagged_redactable):,}[/bold] files to redact "
-                f"[dim]·[/dim] "
-                f"[bold]{len(redactable_secrets):,}[/bold] tokens "
-                f"[dim](several may live in one file)[/dim]"
+                f"  [bold]{len(flagged_redactable):,}[/bold] files to redact"
             )
-            if report_only_secrets:
+            if flagged_lowconf_only:
                 _CON.print(
-                    f"  [dim]Plus {len(report_only_secrets):,} loose-rule patterns "
-                    f"in {len(flagged_lowconf_only):,} files (audit only — "
-                    f"not rewritten; see full report)[/dim]"
+                    f"  [dim]{len(flagged_lowconf_only):,} more have only "
+                    f"loose-rule matches (audit only — not rewritten)[/dim]"
                 )
 
             if type_counts_redactable:
                 _CON.print(
-                    f"\n[bold]Token types to redact[/bold] "
-                    f"[dim](unique tokens, not files)[/dim]\n"
+                    f"\n[bold]Token types in those files[/bold]"
+                    f"  [dim](file count per type — a file may have several)[/dim]\n"
                 )
-                _bars(type_counts_redactable)
+                _bars(type_counts_redactable,
+                      total=len(flagged_redactable),
+                      count_label="Files")
         else:
             for t in targets:
                 r = redact_per_target[t]
@@ -925,12 +937,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 print(f"  {t.display:<22}  redact {r:,} / {tot:,} scanned"
                       f" ({r/tot*100:.1f}%)" if tot else
                       f"  {t.display:<22}  0", flush=True)
-            print(f"  {len(flagged_redactable):,} files to redact, "
-                  f"{len(redactable_secrets):,} high-precision tokens",
+            print(f"  {len(flagged_redactable):,} files to redact",
                   flush=True)
-            if report_only_secrets:
-                print(f"  plus {len(report_only_secrets):,} loose-rule patterns "
-                      f"in {len(flagged_lowconf_only):,} files (audit only)",
+            if flagged_lowconf_only:
+                print(f"  {len(flagged_lowconf_only):,} more have only "
+                      "loose-rule matches (audit only — not rewritten)",
                       flush=True)
 
         p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
@@ -1010,34 +1021,32 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 def _clip(s: str, n: int) -> str:
                     return s if len(s) <= n else s[:n - 1] + "…"
 
-                _CON.print(f"  {'Source':<{source_w}} {'Unique':>6} {'Hits':>7}  File")
-                _CON.print("  " + "─" * min(_CON.width - 2, source_w + path_w + 18))
-                for fp, uniq, hits, proof in exposed:
+                _CON.print(f"  {'Source':<{source_w}}  File")
+                _CON.print("  " + "─" * min(_CON.width - 2, source_w + path_w + 4))
+                for fp, _uniq, _hits, proof in exposed:
                     tool_name, rel = _resolve(fp)
                     _CON.print(
-                        f"  {_clip(tool_name, source_w):<{source_w}} "
-                        f"{uniq:>6} {hits:>7,}  {_trunc_path(rel, path_w)}",
+                        f"  {_clip(tool_name, source_w):<{source_w}}  "
+                        f"{_trunc_path(rel, path_w)}",
                         markup=False,
                     )
                     _CON.print(
-                        f"  {'':<{source_w}} {'':>6} {'':>7}  proof: {proof}",
+                        f"  {'':<{source_w}}  type: {proof}",
                         markup=False,
                     )
             else:
                 tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold dim")
                 tbl.add_column("Source",        style="dim",     min_width=12, max_width=18, no_wrap=True)
-                tbl.add_column("File",                           min_width=24, max_width=56, overflow="ellipsis", no_wrap=True)
-                tbl.add_column("Unique",        justify="right", style="bold yellow", no_wrap=True)
-                tbl.add_column("Hits",          justify="right", style="dim", no_wrap=True)
-                tbl.add_column("Example proof", style="dim",     min_width=16, max_width=30, overflow="ellipsis", no_wrap=True)
-                for fp, uniq, hits, proof in exposed:
+                tbl.add_column("File",                           min_width=24, max_width=64, overflow="ellipsis", no_wrap=True)
+                tbl.add_column("Type",          style="dim",     min_width=16, max_width=30, overflow="ellipsis", no_wrap=True)
+                for fp, _uniq, _hits, proof in exposed:
                     tool_name, rel = _resolve(fp)
-                    tbl.add_row(tool_name, _trunc_path(rel), str(uniq), f"{hits:,}", proof)
+                    tbl.add_row(tool_name, _trunc_path(rel), proof)
                 _CON.print(tbl)
         else:
-            for fp, uniq, hits, proof in exposed:
+            for fp, _uniq, _hits, proof in exposed:
                 tool_name, rel = _resolve(fp)
-                print(f"  {uniq:3d} patterns  {hits:6,} hits  [{tool_name}]  {_trunc_path(rel, 48)}  {proof}", flush=True)
+                print(f"  [{tool_name}]  {_trunc_path(rel, 48)}  {proof}", flush=True)
 
     if dry_run:
         p(f"\n[bold yellow]Scan complete — no files modified.[/bold yellow]\n")
