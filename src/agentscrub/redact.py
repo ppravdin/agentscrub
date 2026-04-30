@@ -326,6 +326,27 @@ def file_findings(
     return findings
 
 
+# ── Parallel report-build worker ─────────────────────────────────────────────
+# Using an initializer to share the secrets/type_map across worker invocations
+# avoids re-pickling them N times (would be MBs of redundant data per file).
+
+_WORKER_SECRETS: set[str] | None = None
+_WORKER_TYPE_MAP: dict[str, str] | None = None
+
+
+def _init_findings_worker(secrets: set[str], type_map: dict[str, str]) -> None:
+    global _WORKER_SECRETS, _WORKER_TYPE_MAP
+    _WORKER_SECRETS = secrets
+    _WORKER_TYPE_MAP = type_map
+
+
+def file_findings_worker(fp_str: str) -> tuple[str, list[dict[str, object]]]:
+    """Pool worker — returns (path_str, findings)."""
+    secrets = _WORKER_SECRETS or set()
+    type_map = _WORKER_TYPE_MAP or {}
+    return fp_str, file_findings(secrets, Path(fp_str), type_map)
+
+
 def top_exposed(
     secrets: set[str],
     flagged: list[Path],

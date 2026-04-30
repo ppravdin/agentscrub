@@ -299,8 +299,8 @@ def _write_scan_report(
                 fh.write(f"... {len(pattern_counts) - 20:,} more pattern types in full audit\n")
 
     def _write_preserved(fh) -> None:
-        _write_group(fh, "Managed credential files preserved - credential findings", preserved_with_credentials)
-        _write_group(fh, "Managed credential files preserved - low-signal only", preserved_low_signal_only)
+        _write_group(fh, "Live auth/MCP files preserved (with credential-like findings)", preserved_with_credentials)
+        _write_group(fh, "Live auth/MCP files preserved (low-signal matches only)", preserved_low_signal_only)
 
     with summary_path.open("w", encoding="utf-8") as fh:
         _write_header(fh, "agentscrub scan summary")
@@ -725,63 +725,75 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         print(f"  {'total':<22}  {len(flagged):,} / {len(redactable_files):,} ({pct:.1f}%)", flush=True)
 
     if preserved:
+        n = len(preserved)
+        word = "file" if n == 1 else "files"
         if RICH:
-            _CON.print("\n[bold]Managed credentials preserved[/bold]")
+            _CON.print("\n[bold]Live auth/MCP files preserved[/bold]")
             _CON.print(
-                f"  [dim]{len(preserved):,} auth/MCP credential file"
-                f"{'' if len(preserved) == 1 else 's'} contain matched patterns "
-                "and will not be redacted.[/dim]"
+                f"  [dim]{n:,} login/MCP {word} the agent needs at runtime "
+                f"contain detected patterns. Not redacted; reported in the full audit.[/dim]"
             )
         else:
-            print(f"\nManaged credentials preserved: {len(preserved):,} file(s)", flush=True)
+            print(
+                f"\nLive auth/MCP files preserved: {n:,} {word} (not redacted)",
+                flush=True,
+            )
 
     findings_by_file: dict[Path, list[dict[str, object]]] = {}
     summary_report_path: Path | None = None
     full_report_path: Path | None = None
     if flagged or preserved:
+        from .redact import file_findings_worker, _init_findings_worker
+
+        report_files = [*flagged, *preserved]
+        report_paths = [str(fp) for fp in report_files]
+
+        def _build_findings_parallel(progress_cb=None) -> dict[Path, list]:
+            out: dict[Path, list] = {}
+            with Pool(
+                WORKERS,
+                initializer=_init_findings_worker,
+                initargs=(all_secrets, _all_typed),
+            ) as pool:
+                for fp_str, findings in pool.imap_unordered(
+                    file_findings_worker, report_paths, chunksize=8
+                ):
+                    out[Path(fp_str)] = findings
+                    if progress_cb:
+                        progress_cb()
+            return out
+
         if RICH:
             with Progress(
                 TextColumn("  "),
                 SpinnerColumn(style="yellow"),
-                TextColumn("[dim]writing detailed scan report…[/dim]"),
+                TextColumn("[dim]building report[/dim]"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
                 console=_CON,
                 transient=True,
             ) as prog:
-                prog.add_task("report", total=None)
-                findings_by_file = {
-                    fp: file_findings(all_secrets, fp, _all_typed)
-                    for fp in [*flagged, *preserved]
-                }
-                summary_report_path, full_report_path = _write_scan_report(
-                    targets=targets,
-                    flagged=flagged,
-                    preserved=preserved,
-                    findings_by_file=findings_by_file,
-                    source_file_counts=[
-                        (t.display, flagged_per_target[t], files_per_target[t])
-                        for t in targets
-                    ],
-                    total_scanned_files=len(redactable_files),
-                    unique_patterns=len(all_secrets),
+                task = prog.add_task("report", total=len(report_paths))
+                findings_by_file = _build_findings_parallel(
+                    progress_cb=lambda: prog.advance(task)
                 )
         else:
-            print("  writing detailed scan report...", flush=True)
-            findings_by_file = {
-                fp: file_findings(all_secrets, fp, _all_typed)
-                for fp in [*flagged, *preserved]
-            }
-            summary_report_path, full_report_path = _write_scan_report(
-                targets=targets,
-                flagged=flagged,
-                preserved=preserved,
-                findings_by_file=findings_by_file,
-                source_file_counts=[
-                    (t.display, flagged_per_target[t], files_per_target[t])
-                    for t in targets
-                ],
-                total_scanned_files=len(redactable_files),
-                unique_patterns=len(all_secrets),
-            )
+            print(f"  building report ({len(report_paths):,} files)...", flush=True)
+            findings_by_file = _build_findings_parallel()
+
+        summary_report_path, full_report_path = _write_scan_report(
+            targets=targets,
+            flagged=flagged,
+            preserved=preserved,
+            findings_by_file=findings_by_file,
+            source_file_counts=[
+                (t.display, flagged_per_target[t], files_per_target[t])
+                for t in targets
+            ],
+            total_scanned_files=len(redactable_files),
+            unique_patterns=len(all_secrets),
+        )
 
         p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
         p(f"[bold]Full audit[/bold]      [dim]{full_report_path}[/dim]")
