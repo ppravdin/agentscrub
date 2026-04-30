@@ -25,6 +25,12 @@ _REGISTRY: list[dict] = [
         tool="claude",
         display="Claude Code",
         dirs=["~/.claude"],
+        # cache/ and marketplaces/ under ~/.claude/plugins/ are downloaded
+        # public artifacts (Anthropic's plugin catalog + cached plugin releases).
+        # They contain no user history but are full of pattern-shape collisions
+        # (plugin slugs, GitHub URLs, commit SHAs) that the detectors flag as
+        # Sourcegraph / Postgres URI / etc. Skip them.
+        exclude_dirs={"cache", "marketplaces"},
         exclude_files={".credentials.json", "settings.json"},
     ),
     dict(
