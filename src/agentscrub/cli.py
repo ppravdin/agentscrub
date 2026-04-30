@@ -879,21 +879,20 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 try: fp.relative_to(t.path); redact_per_target[t] += 1; break
                 except ValueError: pass
 
-        # Collect the distinct token-type names appearing in redactable files,
-        # plus the total hit count (occurrences) for the headline. We commit
-        # to three numbers on screen — files, secrets, hits — and nothing
-        # else with numeric values.
-        type_names_redactable: list[str] = []
-        seen_types: set[str] = set()
-        total_hits_redactable = 0
+        # Per-type hits (= occurrences). Sum of the bar values equals the
+        # 'hits' number in the headline, so the chart and the headline are in
+        # the same unit and add up.
+        hits_per_type: dict[str, int] = {}
         for fp in flagged_redactable:
             for f in findings_by_file.get(fp, []):
-                t = f["type"]
-                if is_high_precision_label(t):
-                    if t not in seen_types:
-                        seen_types.add(t)
-                        type_names_redactable.append(t)
-                    total_hits_redactable += int(f.get("hits", 0) or 0)
+                if is_high_precision_label(f["type"]):
+                    hits_per_type[f["type"]] = (
+                        hits_per_type.get(f["type"], 0) + int(f.get("hits", 0) or 0)
+                    )
+        total_hits_redactable = sum(hits_per_type.values())
+        type_counts_redactable = sorted(
+            hits_per_type.items(), key=lambda x: -x[1]
+        )[:6]
 
         if RICH:
             _CON.print()
@@ -916,15 +915,17 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 f"[dim]·[/dim] "
                 f"[bold]{total_hits_redactable:,}[/bold] hits"
             )
-            if type_names_redactable:
-                _CON.print(
-                    f"  [dim]{', '.join(type_names_redactable)}[/dim]"
-                )
             if flagged_lowconf_only:
                 _CON.print(
                     f"  [dim]{len(flagged_lowconf_only):,} more files have only "
                     f"loose-rule matches (audit only — not rewritten)[/dim]"
                 )
+
+            if type_counts_redactable:
+                _CON.print()
+                _bars(type_counts_redactable,
+                      total=total_hits_redactable,
+                      count_label="Hits")
         else:
             for t in targets:
                 r = redact_per_target[t]
@@ -1016,32 +1017,34 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 def _clip(s: str, n: int) -> str:
                     return s if len(s) <= n else s[:n - 1] + "…"
 
-                _CON.print(f"  {'Source':<{source_w}}  File")
-                _CON.print("  " + "─" * min(_CON.width - 2, source_w + path_w + 4))
-                for fp, _uniq, _hits, proof in exposed:
+                _CON.print(f"  {'Source':<{source_w}} {'Secrets':>7} {'Hits':>6}  File")
+                _CON.print("  " + "─" * min(_CON.width - 2, source_w + path_w + 18))
+                for fp, uniq, hits, proof in exposed:
                     tool_name, rel = _resolve(fp)
                     _CON.print(
-                        f"  {_clip(tool_name, source_w):<{source_w}}  "
-                        f"{_trunc_path(rel, path_w)}",
+                        f"  {_clip(tool_name, source_w):<{source_w}} "
+                        f"{uniq:>7} {hits:>6,}  {_trunc_path(rel, path_w)}",
                         markup=False,
                     )
                     _CON.print(
-                        f"  {'':<{source_w}}  type: {proof}",
+                        f"  {'':<{source_w}} {'':>7} {'':>6}  type: {proof}",
                         markup=False,
                     )
             else:
                 tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold dim")
-                tbl.add_column("Source",        style="dim",     min_width=12, max_width=18, no_wrap=True)
-                tbl.add_column("File",                           min_width=24, max_width=64, overflow="ellipsis", no_wrap=True)
-                tbl.add_column("Type",          style="dim",     min_width=16, max_width=30, overflow="ellipsis", no_wrap=True)
-                for fp, _uniq, _hits, proof in exposed:
+                tbl.add_column("Source",  style="dim",     min_width=12, max_width=18, no_wrap=True)
+                tbl.add_column("File",                     min_width=24, max_width=56, overflow="ellipsis", no_wrap=True)
+                tbl.add_column("Secrets", justify="right", style="bold yellow", no_wrap=True)
+                tbl.add_column("Hits",    justify="right", style="dim", no_wrap=True)
+                tbl.add_column("Type",    style="dim",     min_width=16, max_width=30, overflow="ellipsis", no_wrap=True)
+                for fp, uniq, hits, proof in exposed:
                     tool_name, rel = _resolve(fp)
-                    tbl.add_row(tool_name, _trunc_path(rel), proof)
+                    tbl.add_row(tool_name, _trunc_path(rel), str(uniq), f"{hits:,}", proof)
                 _CON.print(tbl)
         else:
-            for fp, _uniq, _hits, proof in exposed:
+            for fp, uniq, hits, proof in exposed:
                 tool_name, rel = _resolve(fp)
-                print(f"  [{tool_name}]  {_trunc_path(rel, 48)}  {proof}", flush=True)
+                print(f"  {uniq:3d} secrets  {hits:6,} hits  [{tool_name}]  {_trunc_path(rel, 48)}  {proof}", flush=True)
 
     if dry_run:
         p(f"\n[bold yellow]Scan complete — no files modified.[/bold yellow]\n")
