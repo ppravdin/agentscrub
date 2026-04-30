@@ -37,7 +37,11 @@ _REGISTRY: list[dict] = [
         tool="codex",
         display="OpenAI Codex CLI",
         dirs=["~/.codex"],
-        exclude_files={"auth.json", ".credentials.json"},
+        # cache/ holds downloaded codex_apps_tools data; models_cache.json is a
+        # fetched OpenAI model catalog. Both are pure pattern-shape collisions
+        # (slugs, IDs, etags) with no user history.
+        exclude_dirs={"cache"},
+        exclude_files={"auth.json", ".credentials.json", "models_cache.json"},
     ),
     dict(
         tool="cursor",
@@ -45,14 +49,19 @@ _REGISTRY: list[dict] = [
         # ~/.cursor holds IDE chats (projects/), CLI chats (chats/),
         # ACP sessions (acp-sessions/), plus logs/ — all need scanning.
         dirs=["~/.cursor"],
-        exclude_dirs={"bin", "extensions", "node_modules", "plugins"},
+        exclude_dirs={"bin", "extensions", "node_modules", "plugins",
+                      "CachedProfilesData", "CachedExtensionVSIXs"},
         exclude_files={"mcp.json"},
     ),
     dict(
         tool="cursor-server",
         display="Cursor (server)",
         dirs=["~/.cursor-server"],
-        exclude_dirs={"bin", "extensions", "node_modules"},
+        # CachedProfilesData/CachedExtensionVSIXs are pure VS Code-fork
+        # caches; data/logs/ holds extension diagnostic output (Jupyter, LSP)
+        # — not user history.
+        exclude_dirs={"bin", "extensions", "node_modules",
+                      "CachedProfilesData", "CachedExtensionVSIXs", "logs"},
         exclude_files={"mcp.json"},
     ),
     dict(
@@ -65,14 +74,17 @@ _REGISTRY: list[dict] = [
             "~/.config/Cursor/User/workspaceStorage",
             "~/AppData/Roaming/Cursor/User/workspaceStorage",
         ],
-        exclude_dirs={"bin", "extensions", "node_modules"},
+        exclude_dirs={"bin", "extensions", "node_modules",
+                      "CachedProfilesData", "CachedExtensionVSIXs"},
         exclude_files={"mcp.json"},
     ),
     dict(
         tool="antigravity",
         display="Google Antigravity",
         dirs=["~/.antigravity-server"],
-        exclude_dirs={"bin", "extensions", "node_modules"},
+        # Same VS Code-fork cache pattern as Cursor server.
+        exclude_dirs={"bin", "extensions", "node_modules",
+                      "CachedProfilesData", "CachedExtensionVSIXs", "logs"},
         exclude_files={"mcp.json", "mcp_config.json"},
     ),
     dict(
@@ -102,7 +114,8 @@ _REGISTRY: list[dict] = [
         tool="windsurf-server",
         display="Windsurf (server)",
         dirs=["~/.windsurf-server"],
-        exclude_dirs={"bin", "extensions", "node_modules"},
+        exclude_dirs={"bin", "extensions", "node_modules",
+                      "CachedProfilesData", "CachedExtensionVSIXs", "logs"},
         exclude_files={"mcp.json", "mcp_config.json"},
     ),
     dict(
@@ -114,7 +127,8 @@ _REGISTRY: list[dict] = [
             "~/.config/Windsurf/User/workspaceStorage",
             "~/AppData/Roaming/Windsurf/User/workspaceStorage",
         ],
-        exclude_dirs={"bin", "extensions", "node_modules"},
+        exclude_dirs={"bin", "extensions", "node_modules",
+                      "CachedProfilesData", "CachedExtensionVSIXs"},
         exclude_files={"mcp.json", "mcp_config.json"},
     ),
     dict(
