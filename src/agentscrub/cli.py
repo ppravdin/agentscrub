@@ -763,35 +763,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             try: fp.relative_to(t.path); flagged_per_target[t] += 1; break
             except ValueError: pass
 
-    # ── key result — prominent ────────────────────────────────────────────────
+    # ── Phase 2 timing only — the actionable per-tool table needs the
+    # precision partition and runs after the report is built. ────────────────
     if RICH:
-        _CON.print()
-        tbl = Table(box=None, show_header=True, padding=(0, 2),
-                    header_style="bold dim")
-        tbl.add_column("Tool",     style="dim", min_width=20)
-        tbl.add_column("Affected", justify="right", style="bold yellow")
-        tbl.add_column("Scanned",  justify="right", style="dim")
-        tbl.add_column("Pct",      justify="right", style="dim")
-        for t in targets:
-            f, tot = flagged_per_target[t], files_per_target[t]
-            tbl.add_row(t.display, f"{f:,}", f"{tot:,}",
-                        f"{f/tot*100:.0f}%" if tot else "")
-        _CON.print(tbl)
-        _CON.print(
-            f"  [bold]{len(all_secrets):,}[/bold] unique secrets found  "
-            f"· [bold]{len(flagged):,}[/bold] files affected of "
-            f"{len(redactable_files):,} scanned "
-            f"[dim]({pct:.1f}%) · {elapsed2:.1f}s[/dim]"
-        )
-        if _type_counts:
-            _CON.print("\n[bold]Top detected patterns[/bold]\n")
-            _bars(_type_counts)
+        _CON.print(f"  [dim]done in {elapsed2:.1f}s[/dim]")
     else:
-        for t in targets:
-            f, tot = flagged_per_target[t], files_per_target[t]
-            print(f"  {t.display:<22}  {f:,} / {tot:,} ({f/tot*100:.0f}%)" if tot else
-                  f"  {t.display:<22}  0", flush=True)
-        print(f"  {'total':<22}  {len(flagged):,} / {len(redactable_files):,} ({pct:.1f}%)", flush=True)
+        print(f"  done in {elapsed2:.1f}s", flush=True)
 
     # Preserved live auth/MCP files are not announced on stdout — the
     # exclude_dirs / exclude_files lists silently skip plenty of paths to
@@ -889,27 +866,74 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             flagged_redactable_count=len(flagged_redactable),
         )
 
-        p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
-        p(f"[bold]Full audit[/bold]      [dim]{full_report_path}[/dim]")
+        # Per-target breakdown: redactable files only (the actionable count).
+        redact_per_target = {t: 0 for t in targets}
+        for fp in flagged_redactable:
+            for t in targets:
+                try: fp.relative_to(t.path); redact_per_target[t] += 1; break
+                except ValueError: pass
+
+        # Top redactable token types: normalize the raw detector IDs
+        # ("jwt", "generic-api-key", "npm-token") to pretty labels first,
+        # then filter against _HIGH_PRECISION_LABELS.
+        type_counts_redactable: list[tuple[str, int]] = []
+        type_counts_lowconf: list[tuple[str, int]] = []
+        for raw_label, count in _type_counts:
+            short = _short_label(raw_label)
+            if is_high_precision_label(short):
+                type_counts_redactable.append((short, count))
+            else:
+                type_counts_lowconf.append((short, count))
 
         if RICH:
             _CON.print()
+            tbl = Table(box=None, show_header=True, padding=(0, 2),
+                        header_style="bold dim")
+            tbl.add_column("Tool",     style="dim", min_width=20)
+            tbl.add_column("Redact",   justify="right", style="bold yellow")
+            tbl.add_column("Scanned",  justify="right", style="dim")
+            tbl.add_column("Pct",      justify="right", style="dim")
+            for t in targets:
+                r = redact_per_target[t]
+                tot = files_per_target[t]
+                tbl.add_row(t.display, f"{r:,}", f"{tot:,}",
+                            f"{r/tot*100:.1f}%" if tot else "")
+            _CON.print(tbl)
             _CON.print(
-                f"  [bold]{len(redactable_secrets):,}[/bold] high-precision tokens  "
-                f"[dim]·[/dim]  [bold]{len(flagged_redactable):,}[/bold] files to redact"
+                f"  [bold]{len(flagged_redactable):,}[/bold] files to redact "
+                f"[dim]·[/dim] "
+                f"[bold]{len(redactable_secrets):,}[/bold] high-precision tokens"
             )
             if report_only_secrets:
                 _CON.print(
-                    f"  [dim]{len(report_only_secrets):,} low-confidence patterns "
-                    f"in {len(flagged_lowconf_only):,} files reported only "
-                    f"(loose rules — not rewritten to avoid corrupting your data)[/dim]"
+                    f"  [dim]Plus {len(report_only_secrets):,} loose-rule patterns "
+                    f"in {len(flagged_lowconf_only):,} files (audit only — "
+                    f"not rewritten; see full report)[/dim]"
                 )
+
+            if type_counts_redactable:
+                _CON.print("\n[bold]Top redactable token types[/bold]\n")
+                _bars(type_counts_redactable)
+            elif type_counts_lowconf:
+                _CON.print("\n[dim]No high-precision tokens; only loose-rule matches "
+                           "(none will be redacted).[/dim]")
         else:
-            print(f"  high-precision tokens: {len(redactable_secrets):,}, "
-                  f"redact {len(flagged_redactable):,} files", flush=True)
+            for t in targets:
+                r = redact_per_target[t]
+                tot = files_per_target[t]
+                print(f"  {t.display:<22}  redact {r:,} / {tot:,} scanned"
+                      f" ({r/tot*100:.1f}%)" if tot else
+                      f"  {t.display:<22}  0", flush=True)
+            print(f"  {len(flagged_redactable):,} files to redact, "
+                  f"{len(redactable_secrets):,} high-precision tokens",
+                  flush=True)
             if report_only_secrets:
-                print(f"  low-confidence (report only): {len(report_only_secrets):,} "
-                      f"patterns in {len(flagged_lowconf_only):,} files", flush=True)
+                print(f"  plus {len(report_only_secrets):,} loose-rule patterns "
+                      f"in {len(flagged_lowconf_only):,} files (audit only)",
+                      flush=True)
+
+        p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
+        p(f"[bold]Full audit[/bold]      [dim]{full_report_path}[/dim]")
     else:
         # No findings at all — nothing to partition; still set defaults
         # so the rest of the function compiles without unbound names.

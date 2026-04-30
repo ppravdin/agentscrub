@@ -285,8 +285,18 @@ _HIGH_PRECISION_LABELS = frozenset({
 })
 
 
+def _norm_label(s: str) -> str:
+    """Lowercase + strip spaces/dashes/underscores for tolerant comparison."""
+    return s.lower().replace(" ", "").replace("-", "").replace("_", "")
+
+
+_HIGH_PRECISION_NORMALIZED = frozenset(_norm_label(l) for l in _HIGH_PRECISION_LABELS)
+
+
 def is_high_precision_label(label: str) -> bool:
-    return label in _HIGH_PRECISION_LABELS
+    """True if `label` (in any of: 'JWT' / 'jwt' / 'NpmToken' / 'npm token' / 'npm-token') is
+    in the high-precision allowlist. Normalizes case + spaces + dashes."""
+    return _norm_label(label) in _HIGH_PRECISION_NORMALIZED
 
 
 def partition_secrets_by_precision(
