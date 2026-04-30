@@ -696,7 +696,37 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # ── phase 2: scan files ───────────────────────────────────────────────────
     p("\n[bold]Phase 2[/bold]  Mapping findings to affected files")
     t2 = time.perf_counter()
-    scanned_files = sorted(set(collect_files(targets) + collect_managed_credential_files()))
+
+    managed = collect_managed_credential_files()
+    if only_set:
+        # collect_managed_credential_files() returns auth files for every tool
+        # (e.g. ~/.codex/auth.json, ~/.gemini/oauth_creds.json). With --only,
+        # keep only those that live under one of the chosen targets, plus a
+        # small allowlist of well-known home-root files paired to their tool.
+        target_paths = [t.path.resolve() for t in targets]
+        _HOME_ROOT_OWNERS = {
+            ".claude.json": "claude",
+            ".aider.conf.yml": "aider",
+        }
+        home = Path.home()
+
+        def _is_associated(p: Path) -> bool:
+            rp = p.resolve()
+            for tp in target_paths:
+                try:
+                    rp.relative_to(tp)
+                    return True
+                except ValueError:
+                    continue
+            try:
+                rel = p.relative_to(home).as_posix()
+            except ValueError:
+                return False
+            return _HOME_ROOT_OWNERS.get(rel) in only_set
+
+        managed = [p for p in managed if _is_associated(p)]
+
+    scanned_files = sorted(set(collect_files(targets) + managed))
 
     if RICH:
         with Progress(
