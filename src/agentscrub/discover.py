@@ -59,8 +59,12 @@ _REGISTRY: list[dict] = [
         dirs=["~/.cursor-server"],
         # CachedProfilesData/CachedExtensionVSIXs are pure VS Code-fork
         # caches; data/logs/ holds extension diagnostic output (Jupyter, LSP)
-        # — not user history.
-        exclude_dirs={"bin", "extensions", "node_modules",
+        # — not user history. cli/ holds the downloaded Cursor-server
+        # install tree (Stable-<sha>/server/out/...) — that's bundled
+        # Microsoft VS Code JavaScript source, often 20k+ files of
+        # minified JS that produce regex-shape collisions but contain
+        # zero user data.
+        exclude_dirs={"bin", "extensions", "node_modules", "cli",
                       "CachedProfilesData", "CachedExtensionVSIXs", "logs"},
         exclude_files={"mcp.json"},
     ),
