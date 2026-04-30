@@ -885,14 +885,6 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             else:
                 type_counts_lowconf.append((short, count))
 
-        # One-line type breakdown to fold into the headline. Avoids a bar
-        # chart whose counts ("45 JWT, 37 DockerHub") sum to more than the
-        # file count and visually contradict 'redact 52 files'.
-        type_summary = ""
-        if type_counts_redactable:
-            top3 = type_counts_redactable[:3]
-            type_summary = ", ".join(f"{label} {count}" for label, count in top3)
-
         if RICH:
             _CON.print()
             tbl = Table(box=None, show_header=True, padding=(0, 2),
@@ -911,16 +903,21 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 f"  [bold]{len(flagged_redactable):,}[/bold] files to redact "
                 f"[dim]·[/dim] "
                 f"[bold]{len(redactable_secrets):,}[/bold] tokens "
-                f"[dim](some files contain several)[/dim]"
+                f"[dim](several may live in one file)[/dim]"
             )
-            if type_summary:
-                _CON.print(f"  [dim]Mostly: {type_summary}[/dim]")
             if report_only_secrets:
                 _CON.print(
                     f"  [dim]Plus {len(report_only_secrets):,} loose-rule patterns "
                     f"in {len(flagged_lowconf_only):,} files (audit only — "
                     f"not rewritten; see full report)[/dim]"
                 )
+
+            if type_counts_redactable:
+                _CON.print(
+                    f"\n[bold]Token types to redact[/bold] "
+                    f"[dim](unique tokens, not files)[/dim]\n"
+                )
+                _bars(type_counts_redactable)
         else:
             for t in targets:
                 r = redact_per_target[t]
