@@ -179,6 +179,11 @@ agentscrub schedule uninstall
 # Scan an extra directory not in the auto-detect list
 agentscrub run --also ~/my-other-ai-tool
 
+# Limit the run to specific tools — repeatable or comma-separated
+agentscrub run --only claude
+agentscrub run --only claude,codex
+agentscrub --list-tools             # show every known tool ID
+
 # Keep more backups (default: 5)
 agentscrub run --max-backups 10
 ```

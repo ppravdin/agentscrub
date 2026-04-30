@@ -363,13 +363,22 @@ examples:
   agentscrub schedule uninstall        remove cron job
   agentscrub schedule status           show current cron entry
   agentscrub run --also ~/my-ai-tool   scan an extra directory
+  agentscrub run --only claude         redact only Claude Code session logs
+  agentscrub scan --only claude,codex  preview a two-tool scan
+  agentscrub --list-tools              list every known tool ID
         """,
     )
     ap.add_argument("--version", action="version", version=_ver())
+    ap.add_argument("--list-tools", action="store_true",
+                    help="show all known tool IDs (use with --only) and exit")
 
     if subcmd in ("scan", "run"):
         ap.add_argument("--also", metavar="PATH", action="append", default=[],
                         help="extra directory to scan (auto-detected dirs always included)")
+        ap.add_argument("--only", metavar="TOOL", action="append", default=[],
+                        help="limit to specific tool(s); repeatable or comma-separated. "
+                             "Examples: --only claude   --only claude,codex   "
+                             "Run 'agentscrub --list-tools' for available names.")
         ap.add_argument("--max-backups", type=int, default=5, metavar="N",
                         help="backups to keep per tool (default: 5)")
         if subcmd == "run":
@@ -520,12 +529,32 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     dry_run      = subcmd == "scan"
     skip_confirm = getattr(ns, "yes", False)
     extra        = [Path(x).expanduser() for x in getattr(ns, "also", [])]
+    only_raw     = getattr(ns, "only", []) or []
     max_backups  = getattr(ns, "max_backups", 5)
 
+    only_set: set[str] = set()
+    for x in only_raw:
+        only_set.update(t.strip().lower() for t in x.split(",") if t.strip())
+    if only_set:
+        from .discover import _REGISTRY
+        valid = {e["tool"] for e in _REGISTRY} | {"custom"}
+        bad = only_set - valid
+        if bad:
+            p(f"[red]Unknown tool ID(s): {', '.join(sorted(bad))}[/red]")
+            p("[dim]Run 'agentscrub --list-tools' to see available names.[/dim]\n")
+            return
+
     targets = discover(extra)
+    if only_set:
+        # Keep --also custom paths through the filter — user explicitly added them.
+        targets = [t for t in targets if t.tool in only_set or t.tool == "custom"]
     if not targets:
-        p("[red]No AI tool directories found on this machine.[/red]")
-        p("[dim]Use --also <path> to specify a directory manually.[/dim]\n")
+        if only_set:
+            p(f"[red]No matching tool directories found for --only {','.join(sorted(only_set))}[/red]")
+            p("[dim]Run 'agentscrub --list-tools' to see what's installed.[/dim]\n")
+        else:
+            p("[red]No AI tool directories found on this machine.[/red]")
+            p("[dim]Use --also <path> to specify a directory manually.[/dim]\n")
         return
 
     # Refuse to claim "clean" when no detectors exist — that would be silent failure.
@@ -977,6 +1006,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
 def main() -> None:
     subcmd, ns = _parse()
+    if getattr(ns, "list_tools", False):
+        cmd_list_tools()
+        return
     if subcmd == "doctor":
         cmd_doctor()
     elif subcmd == "schedule":
@@ -985,6 +1017,19 @@ def main() -> None:
         cmd_rollback(ns)
     else:
         cmd_scan_or_run(subcmd, ns)
+
+
+def cmd_list_tools() -> None:
+    from .discover import _REGISTRY, discover
+    targets = {t.tool: t.path for t in discover()}
+    print("Tool IDs (use with --only):", flush=True)
+    for spec in _REGISTRY:
+        tool = spec["tool"]
+        display = spec["display"]
+        present = "✓" if tool in targets else " "
+        loc = f" -> {targets[tool]}" if tool in targets else ""
+        print(f"  {present} {tool:18}  {display}{loc}", flush=True)
+    print("\n✓ = directory exists on this machine", flush=True)
 
 
 if __name__ == "__main__":
