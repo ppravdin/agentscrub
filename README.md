@@ -1,28 +1,101 @@
 # agentscrub
 
+![agentscrub — scan code and logs, detect secrets, protect everywhere](assets/cover.png)
+
 Scrubs secrets and credentials from your AI coding assistant session logs.
 
 AI tools like Claude Code, Codex CLI, and Cursor store your entire conversation history locally — including any API keys, database passwords, JWTs, and OAuth tokens you've pasted in or that appeared in code. Supply-chain attacks on VS Code extensions or npm packages routinely scan these files. agentscrub finds and removes them.
 
+## Quick start
+
+```bash
+# Install
+pipx install agentscrub
+
+# Install the three detectors (gitleaks, TruffleHog, Titus). See "Detection tools"
+# below for macOS / Windows / arm64 builds.
+agentscrub doctor      # tells you what's missing
+
+# Read-only audit — writes nothing; produces two masked reports
+agentscrub scan
+
+# Redact in place — asks for confirmation, takes a backup first
+agentscrub run
+
+# Cron-friendly: backup + redact daily at 03:00
+agentscrub schedule install
+```
+
+## Safety model
+
+- `scan` is **read-only**. It never modifies a file. Use it to see what's exposed.
+- `run` writes a **timestamped backup** of every affected directory before touching anything. Restore with `agentscrub rollback`.
+- **Live auth and MCP credential stores are preserved by design** — files like `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, `cline_mcp_settings.json`, and the Windsurf / OpenCode / Crush / Continue config files are scanned and reported but never modified. [Full list below](#live-auth--mcp-files-preserved-scanned-reported-never-modified).
+- **Raw secrets are never printed in reports.** Each match gets a stable proof hash so you can correlate the same secret across files without exposing it.
+- All scanners run **locally**. Nothing leaves your machine.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Agent dirs<br/>~/.claude, ~/.codex,<br/>~/.cursor, ...] --> B[3 scanners<br/>find secrets]
+    B --> C{Live auth /<br/>MCP file?}
+    C -->|Yes| D[Reported<br/>Never modified]
+    C -->|No| E[Backup +<br/>Redact in place]
+```
+
 ## What it covers
 
-| Tool | Log location | Notes |
+All tools are **auto-detected** — no configuration required. Each row lists every
+folder agentscrub recognises across Linux, macOS, and Windows; the first one
+that exists on your machine is scanned. Plain-text logs, JSONL sessions, and
+JSON state files are scrubbed in place; SQLite databases (`.sqlite`, `.db`,
+`.vscdb`) are scrubbed via SQL UPDATE on text columns containing detected
+secrets.
+
+| Tool | Where session/log data lives | Notes |
 |---|---|---|
-| Claude Code | `~/.claude/` | JSONL sessions, file-history snapshots |
-| OpenAI Codex CLI | `~/.codex/` | sessions, SQLite trace/state databases |
-| Cursor / Antigravity | `~/.antigravity-server/`, `~/.cursor/logs` | data files only — binaries/extensions excluded |
-| Aider | `~/.aider/` | |
-| Continue | `~/.continue/` | |
-| Windsurf | `~/.windsurf/` | |
+| Claude Code | `~/.claude/` | JSONL sessions, file-history snapshots, project trees |
+| OpenAI Codex CLI | `~/.codex/` | `sessions/`, `history.jsonl`, `logs_*.sqlite`, `state_*.sqlite` |
+| Cursor (CLI/IDE) | `~/.cursor/` | `projects/` (IDE chats), `chats/` (CLI), `acp-sessions/`, `logs/` |
+| Cursor (server) | `~/.cursor-server/` | remote-dev / SSH server-side trees |
+| Cursor (desktop) | `~/Library/Application Support/Cursor/User/workspaceStorage/`, `~/.config/Cursor/User/workspaceStorage/`, `~/AppData/Roaming/Cursor/User/workspaceStorage/` | chats live in `state.vscdb` (SQLite) |
+| Google Antigravity | `~/.antigravity-server/` | server-side IDE state |
+| Windsurf | `~/.codeium/windsurf/` (XDG canonical), `~/.config/Codeium/Windsurf/`, `~/AppData/Roaming/Codeium/Windsurf/`, `~/.windsurf/` | Cascade conversation history |
+| Windsurf (server) | `~/.windsurf-server/` | remote-dev / SSH server-side trees |
+| Windsurf (desktop) | `~/Library/Application Support/Windsurf/User/workspaceStorage/`, `~/.config/Windsurf/User/workspaceStorage/`, `~/AppData/Roaming/Windsurf/User/workspaceStorage/` | desktop IDE workspaceStorage |
+| Gemini CLI | `~/.gemini/` | `tmp/<project_hash>/chats/`, plus the Antigravity `brain/`, `skills/`, `commands/` trees |
+| Zed AI | `~/.local/share/zed/`, `~/Library/Application Support/Zed/`, `~/AppData/Roaming/Zed/`, legacy `~/.config/zed/conversations/` | conversation history in `threads/threads.db` (SQLite) |
+| OpenCode | `~/.local/share/opencode/` (state, sessions) and `~/.config/opencode/` (config) | XDG-only on all OSes per upstream |
+| Crush (Charm) | `~/.local/share/crush/` (state, logs) and `~/.config/crush/` (config) | per-workspace `.crush/` state, `crush.log` |
+| Cline | VS Code `globalStorage/saoudrizwan.claude-dev/` (cross-OS) **or** `~/.cline/data/` (CLI mode) | `tasks/<id>/`, `state/`, `checkpoints/` |
+| GitHub Copilot Chat | `Code/User/workspaceStorage/*/GitHub.copilot-chat/` (cross-OS, scoped to the Copilot extension only) | `chatSessions/`, `transcripts/`, plus `state.vscdb` chat data |
+| Aider | `~/.aider/` | repo-local `.aider.input.history` / `.aider.chat.history.md` are out of scope — pass them with `--also <path>` |
+| Continue | `~/.continue/` | CLI sessions in `~/.continue/sessions/` |
 
-All tools are **auto-detected** — no configuration required.
+### Live auth & MCP files preserved (scanned, reported, **never modified**)
 
-Live auth and MCP credential stores are preserved by design. agentscrub may
-report matched patterns in files such as `~/.claude/.credentials.json`,
-`~/.codex/auth.json`, `~/.codex/.credentials.json`, `~/.cursor/mcp.json`,
-`~/.gemini/antigravity/mcp_config.json`, or `~/.mcp-auth/`, but `run` will not
-modify those files. The goal is to remove leaked copies from logs, histories,
-and caches without breaking agent logins or MCP connections.
+`agentscrub run` will not write to any of the following — they're the live
+credentials your agent needs to keep working. They're still scanned and any
+matched patterns are reported, so you can review them by hand if needed.
+
+| Tool | Preserved file(s) |
+|---|---|
+| Claude Code | `~/.claude/.credentials.json`, `~/.claude/settings.json`, `~/.claude.json` |
+| Codex CLI | `~/.codex/auth.json`, `~/.codex/.credentials.json`, `~/.codex/config.toml` |
+| Cursor | `~/.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json`, `~/.codeium/mcp_config.json`, `~/.config/Codeium/Windsurf/mcp_config.json`, `~/.windsurf/mcp.json`, `~/.windsurf/mcp_config.json` |
+| Gemini CLI | `~/.gemini/oauth_creds.json`, `~/.gemini/mcp-oauth-tokens.json`, `~/.gemini/settings.json`, `~/.gemini/google_accounts.json`, `~/.gemini/trustedFolders.json`, `~/.gemini/installation_id`, `~/.gemini/user_id`, `~/.gemini/antigravity/mcp_config.json` |
+| OpenCode | `~/.local/share/opencode/auth.json`, `~/.local/share/opencode/mcp-auth.json`, `~/.config/opencode/opencode.{json,jsonc}`, `~/.config/opencode/tui.{json,jsonc}` |
+| Crush | `~/.local/share/crush/mcp.json`, `~/.local/share/crush/crush.json`, `~/.config/crush/crush.json` |
+| Aider | `~/.aider.conf.yml` |
+| Continue | `~/.continue/config.yaml`, `~/.continue/config.json`, `~/.continue/config.ts`, `~/.continue/.env` |
+| Cline (VS Code) | `<globalStorage>/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`, `…/secrets.json` |
+| Cline (CLI) | `~/.cline/data/settings/cline_mcp_settings.json`, `~/.cline/data/secrets.json`, `~/.cline/data/globalState.json` |
+| Generic | everything under `~/.mcp-auth/` |
+
+The goal is to remove leaked copies from logs, histories, and caches without
+breaking agent logins or MCP connections.
 
 Each scan or run writes two masked reports to `~/.agentscrub/logs/`:
 
@@ -36,15 +109,15 @@ same secret across files without exposing the secret itself.
 
 ## How it finds secrets
 
-Three tools run in parallel (~25s combined):
+Three open-source scanners run locally, in parallel; their findings are union'd and deduplicated:
 
-| Tool | Finds | Coverage |
-|---|---|---|
-| **gitleaks** | JWTs, generic API keys, npm/GitHub tokens | 8 rule types |
-| **TruffleHog** | Postgres, GCP, Dockerhub, OAuth, Stripe, Groq… | 23 detectors |
-| **Titus** | Generic username/password pairs, connection URIs, PostHog, LinkedIn… | 487 rules |
+| Tool | Finds |
+|---|---|
+| **[gitleaks](https://github.com/gitleaks/gitleaks)** | JWTs, generic API keys, npm/GitHub tokens |
+| **[TruffleHog](https://github.com/trufflesecurity/trufflehog)** | Postgres URIs, GCP/AWS keys, Dockerhub, OAuth, Stripe, Groq, and dozens more |
+| **[Titus](https://github.com/praetorian-inc/titus)** (NoseyParker successor) | Username/password pairs, connection URIs, PostHog, LinkedIn, hundreds of generic rules |
 
-Union of all findings → deduplicated. JSON lines are parsed and secrets replaced inside string values only, preserving file structure even when secrets contain `"` or `{}` characters.
+JSON lines are parsed and secrets are replaced inside string values only, preserving file structure even when secrets contain `"` or `{}` characters. SQLite databases are updated via SQL on text columns containing detected secrets.
 
 ## Install
 
@@ -56,6 +129,12 @@ pipx install agentscrub
 
 ### Detection tools
 
+The commands below install the **Linux x86_64** builds. For macOS, Windows, or arm64, grab the matching binary from each project's release page and drop it into `~/.local/bin/` (or any directory on your `PATH`):
+
+- gitleaks releases: <https://github.com/gitleaks/gitleaks/releases>
+- TruffleHog releases: <https://github.com/trufflesecurity/trufflehog/releases>
+- Titus releases: <https://github.com/praetorian-inc/titus/releases>
+
 ```bash
 # gitleaks
 curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.26.0/gitleaks_8.26.0_linux_x64.tar.gz \
@@ -65,7 +144,7 @@ curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.26.0/gitleaks
 curl -sL https://github.com/trufflesecurity/trufflehog/releases/download/v3.95.2/trufflehog_3.95.2_linux_amd64.tar.gz \
   | tar xz -C ~/.local/bin/ trufflehog && chmod +x ~/.local/bin/trufflehog
 
-# Titus (NoseyParker successor, 487 rules)
+# Titus
 curl -sLo ~/.local/bin/titus \
   https://github.com/praetorian-inc/titus/releases/download/v1.1.29/titus-linux-amd64 \
   && chmod +x ~/.local/bin/titus
