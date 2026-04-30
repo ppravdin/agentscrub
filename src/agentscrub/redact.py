@@ -21,25 +21,92 @@ BINARY_EXTS = frozenset({
     ".zip", ".tar", ".gz", ".bz2", ".xz", ".zst", ".rar",
     ".pdf", ".doc", ".docx", ".xls", ".xlsx",
     ".sqlite", ".db", ".sqlite-shm", ".sqlite-wal",
+    ".vscdb", ".vscdb-shm", ".vscdb-wal", ".db-shm", ".db-wal",
+    ".mdb",  # LMDB binary (Zed Flatpak threads-db.1.mdb) — cannot be redacted in-place
 })
+
+# SQLite-family file extensions that the SQLite redaction pass should open.
+# Excludes -shm/-wal companions (they're handled implicitly by the main DB).
+_SQLITE_GLOBS = ("*.sqlite", "*.db", "*.vscdb")
 
 _MANAGED_CREDENTIAL_FILES = frozenset({
     ".claude/.credentials.json",
+    ".claude/settings.json",
     ".claude.json",
     ".codex/auth.json",
     ".codex/.credentials.json",
     ".codex/config.toml",
     ".cursor/mcp.json",
+    ".windsurf/mcp.json",
+    ".windsurf/mcp_config.json",
+    ".codeium/mcp_config.json",
+    ".codeium/windsurf/mcp_config.json",
+    ".config/Codeium/Windsurf/mcp_config.json",
     ".gemini/antigravity/mcp_config.json",
+    ".gemini/oauth_creds.json",
+    ".gemini/mcp-oauth-tokens.json",
+    ".gemini/settings.json",
+    ".gemini/google_accounts.json",
+    ".gemini/trustedFolders.json",
+    ".gemini/installation_id",
+    ".gemini/user_id",
+    ".local/share/opencode/auth.json",
+    ".local/share/opencode/mcp-auth.json",
+    ".config/opencode/opencode.json",
+    ".config/opencode/opencode.jsonc",
+    ".config/opencode/tui.json",
+    ".config/opencode/tui.jsonc",
+    ".local/share/crush/mcp.json",
+    ".local/share/crush/crush.json",
+    ".config/crush/crush.json",
+    ".aider.conf.yml",
+    ".continue/config.yaml",
+    ".continue/config.json",
+    ".continue/config.ts",
+    ".continue/.env",
+    ".cline/data/settings/cline_mcp_settings.json",
+    ".cline/data/secrets.json",
+    ".cline/data/globalState.json",
 })
 
 _MANAGED_CREDENTIAL_SUFFIXES = (
     (".cursor", "mcp.json"),
+    (".windsurf", "mcp.json"),
+    (".windsurf", "mcp_config.json"),
     (".codex", "config.toml"),
     (".codex", "auth.json"),
     (".codex", ".credentials.json"),
     (".claude", ".credentials.json"),
+    (".claude", "settings.json"),
+    (".codeium", "mcp_config.json"),
+    (".codeium", "windsurf", "mcp_config.json"),
+    (".config", "Codeium", "Windsurf", "mcp_config.json"),
     (".gemini", "antigravity", "mcp_config.json"),
+    (".gemini", "oauth_creds.json"),
+    (".gemini", "mcp-oauth-tokens.json"),
+    (".gemini", "settings.json"),
+    ("opencode", "auth.json"),
+    ("opencode", "mcp-auth.json"),
+    (".config", "opencode", "opencode.json"),
+    (".config", "opencode", "opencode.jsonc"),
+    (".config", "opencode", "tui.json"),
+    (".config", "opencode", "tui.jsonc"),
+    ("crush", "mcp.json"),
+    ("crush", "crush.json"),
+    (".config", "crush", "crush.json"),
+    (".aider.conf.yml",),
+    (".continue", "config.yaml"),
+    (".continue", "config.json"),
+    (".continue", "config.ts"),
+    (".continue", ".env"),
+    # Cline VS Code extension — same trailing path on macOS / Linux / Windows
+    ("saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
+    ("saoudrizwan.claude-dev", "settings", "secrets.json"),
+    ("saoudrizwan.claude-dev", "secrets.json"),
+    # Cline CLI mode (default ~/.cline; also catches CLINE_DIR override that ends with /.cline)
+    (".cline", "data", "settings", "cline_mcp_settings.json"),
+    (".cline", "data", "secrets.json"),
+    (".cline", "data", "globalState.json"),
 )
 
 
@@ -359,7 +426,15 @@ def redact_sqlite(
     """Redact text columns in all SQLite DBs. Returns (total, [(path, count)])."""
     results: list[tuple[Path, int]] = []
     for target in targets:
-        for db_path in sorted(target.path.rglob("*.sqlite")):
+        seen_dbs: set[Path] = set()
+        db_paths: list[Path] = []
+        for pattern in _SQLITE_GLOBS:
+            for p in target.path.rglob(pattern):
+                if p in seen_dbs:
+                    continue
+                seen_dbs.add(p)
+                db_paths.append(p)
+        for db_path in sorted(db_paths):
             if target.excluded(db_path):
                 continue
             try:
