@@ -66,7 +66,7 @@ secrets.
 | Windsurf (desktop) | `~/Library/Application Support/Windsurf/User/workspaceStorage/`, `~/.config/Windsurf/User/workspaceStorage/`, `~/AppData/Roaming/Windsurf/User/workspaceStorage/` | desktop IDE workspaceStorage |
 | Gemini CLI | `~/.gemini/` | `tmp/<project_hash>/chats/`, plus the Antigravity `brain/`, `skills/`, `commands/` trees |
 | Zed AI | `~/.local/share/zed/`, `~/Library/Application Support/Zed/`, `~/AppData/Roaming/Zed/`, legacy `~/.config/zed/conversations/` | conversation history in `threads/threads.db` (SQLite) |
-| OpenCode | `~/.local/share/opencode/` (state, sessions) and `~/.config/opencode/` (config) | XDG-only on all OSes per upstream |
+| OpenCode | `~/.local/share/opencode/` (state, sessions) and `~/.config/opencode/` (config) | state/session data plus global config |
 | Crush (Charm) | `~/.local/share/crush/` (state, logs) and `~/.config/crush/` (config) | per-workspace `.crush/` state, `crush.log` |
 | Cline | VS Code `globalStorage/saoudrizwan.claude-dev/` (cross-OS) **or** `~/.cline/data/` (CLI mode) | `tasks/<id>/`, `state/`, `checkpoints/` |
 | GitHub Copilot Chat | `Code/User/workspaceStorage/*/GitHub.copilot-chat/` (cross-OS, scoped to the Copilot extension only) | `chatSessions/`, `transcripts/`, plus `state.vscdb` chat data |
@@ -109,7 +109,7 @@ same secret across files without exposing the secret itself.
 
 ## How it finds secrets
 
-Three open-source scanners run locally, in parallel; their findings are union'd and deduplicated:
+Three open-source scanners run locally, in parallel; agentscrub merges and deduplicates their findings:
 
 | Tool | Finds |
 |---|---|
