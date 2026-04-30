@@ -368,7 +368,8 @@ examples:
   agentscrub --list-tools              list every known tool ID
         """,
     )
-    ap.add_argument("--version", action="version", version=_ver())
+    ap.add_argument("--version", action="store_true",
+                    help="show version and exit")
     ap.add_argument("--list-tools", action="store_true",
                     help="show all known tool IDs (use with --only) and exit")
 
@@ -405,11 +406,49 @@ def _ver() -> str:
         return "agentscrub"
 
 
+def _splash_text() -> str | None:
+    try:
+        from importlib.resources import files
+        return files("agentscrub").joinpath("splash.txt").read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
+def _print_splash() -> None:
+    txt = _splash_text()
+    if not txt:
+        return
+    if RICH:
+        # Render as-is; Rich preserves whitespace and U+2588 blocks.
+        # Dim the fake redacted-token lines, leave the brand mark default.
+        _CON.print(txt, style="dim", end="")
+    else:
+        print(txt, end="")
+
+
+_FIRST_RUN_MARKER = Path.home() / ".agentscrub" / ".welcomed"
+
+
+def _is_first_run() -> bool:
+    return not _FIRST_RUN_MARKER.exists()
+
+
+def _mark_welcomed() -> None:
+    try:
+        _FIRST_RUN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _FIRST_RUN_MARKER.touch()
+    except OSError:
+        pass
+
+
 # ── doctor ────────────────────────────────────────────────────────────────────
 
 def cmd_doctor() -> None:
     import shutil, subprocess
     from .secrets import GITLEAKS, TRUFFLEHOG, TITUS
+
+    _print_splash()
+    p(f"  [dim]{_ver()}[/dim]\n")
 
     checks = [
         ("gitleaks",   GITLEAKS,   ["version"]),
@@ -531,6 +570,10 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     extra        = [Path(x).expanduser() for x in getattr(ns, "also", [])]
     only_raw     = getattr(ns, "only", []) or []
     max_backups  = getattr(ns, "max_backups", 5)
+
+    if _is_first_run():
+        _print_splash()
+        _mark_welcomed()
 
     only_set: set[str] = set()
     for x in only_raw:
@@ -1029,6 +1072,10 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
 def main() -> None:
     subcmd, ns = _parse()
+    if getattr(ns, "version", False):
+        _print_splash()
+        print(_ver())
+        return
     if getattr(ns, "list_tools", False):
         cmd_list_tools()
         return
