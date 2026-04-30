@@ -732,20 +732,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                   f"  {t.display:<22}  0", flush=True)
         print(f"  {'total':<22}  {len(flagged):,} / {len(redactable_files):,} ({pct:.1f}%)", flush=True)
 
-    if preserved:
-        n = len(preserved)
-        word = "file" if n == 1 else "files"
-        if RICH:
-            _CON.print("\n[bold]Live auth/MCP files preserved[/bold]")
-            _CON.print(
-                f"  [dim]{n:,} login/MCP {word} the agent needs at runtime "
-                f"contain detected patterns. Not redacted; reported in the full audit.[/dim]"
-            )
-        else:
-            print(
-                f"\nLive auth/MCP files preserved: {n:,} {word} (not redacted)",
-                flush=True,
-            )
+    # Preserved live auth/MCP files are not announced on stdout — the
+    # exclude_dirs / exclude_files lists silently skip plenty of paths to
+    # protect user data, and singling out this one bucket inconsistently
+    # makes the run noisier without adding info. The full audit report
+    # still has dedicated sections listing every preserved file and its
+    # matches.
 
     findings_by_file: dict[Path, list[dict[str, object]]] = {}
     summary_report_path: Path | None = None
