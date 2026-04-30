@@ -704,22 +704,21 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # ── key result — prominent ────────────────────────────────────────────────
     if RICH:
         _CON.print()
-        tbl = Table(box=None, show_header=False, padding=(0, 0))
-        tbl.add_column("Source",  style="dim", min_width=20)
-        tbl.add_column("sp",      style="dim")
-        tbl.add_column("Flagged", justify="right", style="bold yellow")
-        tbl.add_column("sep",     style="dim")
-        tbl.add_column("Total",   justify="right", style="dim")
-        tbl.add_column("lbl",     style="dim")
-        tbl.add_column("Pct",     justify="right", style="dim")
+        tbl = Table(box=None, show_header=True, padding=(0, 2),
+                    header_style="bold dim")
+        tbl.add_column("Tool",     style="dim", min_width=20)
+        tbl.add_column("Affected", justify="right", style="bold yellow")
+        tbl.add_column("Scanned",  justify="right", style="dim")
+        tbl.add_column("Pct",      justify="right", style="dim")
         for t in targets:
             f, tot = flagged_per_target[t], files_per_target[t]
-            tbl.add_row(t.display, " ", f"{f:,}", " / ", f"{tot:,}", " files  ",
+            tbl.add_row(t.display, f"{f:,}", f"{tot:,}",
                         f"{f/tot*100:.0f}%" if tot else "")
         _CON.print(tbl)
         _CON.print(
-            f"  [bold]{len(all_secrets):,}[/bold] secret-like patterns  "
-            f"· [bold]{len(flagged):,}[/bold] / {len(redactable_files):,} files affected "
+            f"  [bold]{len(all_secrets):,}[/bold] unique secrets found  "
+            f"· [bold]{len(flagged):,}[/bold] files affected of "
+            f"{len(redactable_files):,} scanned "
             f"[dim]({pct:.1f}%) · {elapsed2:.1f}s[/dim]"
         )
         if _type_counts:
