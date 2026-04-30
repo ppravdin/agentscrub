@@ -70,3 +70,4 @@ Desktop.ini
 
 # ── agentscrub runtime artifacts (in case anyone runs from repo) ─
 .agentscrub/
+.codex
