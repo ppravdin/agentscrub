@@ -593,50 +593,60 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     all_scan_paths = [t.path for t in targets]
 
     # ── phase 1: detect credentials ───────────────────────────────────────────
-    p("\n[bold]Phase 1[/bold]  Detecting secret-like patterns")
+    p("\n[bold]Phase 1[/bold]  Checking agent directories")
     t1 = time.perf_counter()
 
     if RICH:
         from .secrets import _gitleaks, _trufflehog, _titus
-        _TOOLS = ("gitleaks", "trufflehog", "titus")
-        _fns   = {"gitleaks": _gitleaks, "trufflehog": _trufflehog, "titus": _titus}
-        _sp    = Spinner("dots", style="yellow")
-        _t0    = {t: time.perf_counter() for t in _TOOLS}
-        _done: dict[str, tuple[int, float]] = {}
-        by_tool: dict[str, dict] = {t: {} for t in _TOOLS}
+        import threading as _threading
+        _DETECTORS = ("gitleaks", "trufflehog", "titus")
+        _fns       = {"gitleaks": _gitleaks, "trufflehog": _trufflehog, "titus": _titus}
+        _sp        = Spinner("dots", style="yellow")
+        # per-target progress: how many detectors have finished this target,
+        # and how many total findings it has accumulated so far
+        _t_lock      = _threading.Lock()
+        _t_done_n    = {t.path: 0 for t in targets}     # 0..3
+        _t_findings  = {t.path: 0 for t in targets}     # cumulative across detectors
+        _t_started   = {t.path: time.perf_counter() for t in targets}
+        _t_finished  = {t.path: 0.0 for t in targets}
+        by_tool: dict[str, dict] = {t: {} for t in _DETECTORS}
 
         class _Phase1Live:
             def __rich_console__(self, console, options):
                 tbl = Table(box=None, show_header=True, padding=(0, 2),
                             header_style="bold dim")
-                tbl.add_column("",         min_width=3)
-                tbl.add_column("Detector", min_width=12)
+                tbl.add_column("",        min_width=3)
+                tbl.add_column("Tool",    min_width=20)
                 tbl.add_column("Findings", justify="right")
-                tbl.add_column("Time",     style="dim")
-                for tool in _TOOLS:
-                    elapsed = time.perf_counter() - _t0[tool]
-                    if tool in _done:
-                        n, t = _done[tool]
-                        tbl.add_row("[bold green]✓[/bold green]", tool,
-                                    f"{n:,}", f"{t:.0f}s")
+                tbl.add_column("Time",    style="dim")
+                for t in targets:
+                    done_n = _t_done_n[t.path]
+                    if done_n >= len(_DETECTORS):
+                        elapsed = _t_finished[t.path] - _t_started[t.path]
+                        tbl.add_row("[bold green]✓[/bold green]", t.display,
+                                    f"{_t_findings[t.path]:,}", f"{elapsed:.0f}s")
                     else:
-                        tbl.add_row(_sp, tool, "…", f"{elapsed:.0f}s")
+                        elapsed = time.perf_counter() - _t_started[t.path]
+                        tbl.add_row(_sp, t.display, "…", f"{elapsed:.0f}s")
                 yield tbl
 
-        def _run_one(fn):
-            d: dict[str, str] = {}
+        def _run_one(detector_name: str, fn) -> dict[str, str]:
+            out: dict[str, str] = {}
             for target in targets:
-                d.update(fn(target.path))
-            return d
+                result = fn(target.path)
+                out.update(result)
+                with _t_lock:
+                    _t_done_n[target.path] += 1
+                    _t_findings[target.path] += len(result)
+                    if _t_done_n[target.path] == len(_DETECTORS):
+                        _t_finished[target.path] = time.perf_counter()
+            return out
 
         with concurrent.futures.ThreadPoolExecutor() as ex:
-            futs = {ex.submit(_run_one, fn): tool for tool, fn in _fns.items()}
+            futs = {ex.submit(_run_one, name, fn): name for name, fn in _fns.items()}
             with Live(_Phase1Live(), console=_CON, refresh_per_second=4):
                 for fut in concurrent.futures.as_completed(futs):
-                    tool = futs[fut]
-                    result = fut.result()
-                    by_tool[tool] = result
-                    _done[tool] = (len(result), time.perf_counter() - _t0[tool])
+                    by_tool[futs[fut]] = fut.result()
 
         all_secrets = {s for sdict in by_tool.values()
                        for s in sdict if len(s) >= 8 and not s.isspace()}
@@ -649,7 +659,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         all_secrets, counts = collect(targets)
         _all_typed: dict[str, str] = {}
         for tool, n in counts.items():
-            print(f"  {tool:<12} {n:,}", flush=True)
+            print(f"  detector {tool:<12} {n:,}", flush=True)
         print(f"  {'total unique':<12} {len(all_secrets):,}", flush=True)
         print(f"  {time.perf_counter()-t1:.1f}s", flush=True)
 
@@ -745,7 +755,19 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     if flagged or preserved:
         from .redact import file_findings_worker, _init_findings_worker
 
+        # Sort largest-first so the longest-running files start at t=0 and the
+        # tail of the queue is small files. Otherwise the bar reaches
+        # near-complete fast and then sits for tens of seconds while one
+        # worker grinds through a 6+ MB session JSONL while 14 others idle.
+        # chunksize=1 also matters: with chunksize=8, a worker grabs 8 files
+        # at once and other workers can't steal a giant file from its batch.
         report_files = [*flagged, *preserved]
+        def _size(fp: Path) -> int:
+            try:
+                return fp.stat().st_size
+            except OSError:
+                return 0
+        report_files.sort(key=_size, reverse=True)
         report_paths = [str(fp) for fp in report_files]
 
         def _build_findings_parallel(progress_cb=None) -> dict[Path, list]:
@@ -756,7 +778,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 initargs=(all_secrets, _all_typed),
             ) as pool:
                 for fp_str, findings in pool.imap_unordered(
-                    file_findings_worker, report_paths, chunksize=8
+                    file_findings_worker, report_paths, chunksize=1
                 ):
                     out[Path(fp_str)] = findings
                     if progress_cb:

@@ -329,21 +329,69 @@ def file_findings(
 # ── Parallel report-build worker ─────────────────────────────────────────────
 # Using an initializer to share the secrets/type_map across worker invocations
 # avoids re-pickling them N times (would be MBs of redundant data per file).
+# We also write the secrets to a per-worker tempfile so each file scan can
+# delegate to `grep -oFc` instead of running ~1000 Python substring searches
+# in pure Python over a multi-MB session log.
+
+import collections as _collections
 
 _WORKER_SECRETS: set[str] | None = None
 _WORKER_TYPE_MAP: dict[str, str] | None = None
+_WORKER_PATTERNS_FILE: str | None = None
 
 
 def _init_findings_worker(secrets: set[str], type_map: dict[str, str]) -> None:
-    global _WORKER_SECRETS, _WORKER_TYPE_MAP
+    global _WORKER_SECRETS, _WORKER_TYPE_MAP, _WORKER_PATTERNS_FILE
     _WORKER_SECRETS = secrets
     _WORKER_TYPE_MAP = type_map
+    if secrets:
+        fd, path = tempfile.mkstemp(prefix="agentscrub_findings_", suffix=".txt")
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(secrets))
+        _WORKER_PATTERNS_FILE = path
+    else:
+        _WORKER_PATTERNS_FILE = None
+
+
+def _file_findings_grep(
+    secrets: set[str],
+    type_map: dict[str, str],
+    fp: Path,
+    patterns_file: str,
+) -> list[dict[str, object]]:
+    """Fast path: grep -oF prints every match (one per line); we count via Counter."""
+    try:
+        r = subprocess.run(
+            ["grep", "-oF", f"--file={patterns_file}", str(fp)],
+            capture_output=True, text=True, timeout=120, errors="ignore",
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if r.returncode > 1:
+        return []
+    counts = _collections.Counter(
+        line for line in r.stdout.splitlines() if line and line in secrets
+    )
+    findings: list[dict[str, object]] = []
+    for secret in sorted(
+        counts.keys(),
+        key=lambda s: (type_map.get(s, "unknown"), hashlib.sha256(s.encode()).hexdigest()),
+    ):
+        label = _short_label(type_map.get(secret, "unknown"))
+        findings.append({
+            "type": label,
+            "proof": _proof(secret, type_map.get(secret, "unknown")),
+            "hits": counts[secret],
+        })
+    return findings
 
 
 def file_findings_worker(fp_str: str) -> tuple[str, list[dict[str, object]]]:
     """Pool worker — returns (path_str, findings)."""
     secrets = _WORKER_SECRETS or set()
     type_map = _WORKER_TYPE_MAP or {}
+    if _WORKER_PATTERNS_FILE and secrets:
+        return fp_str, _file_findings_grep(secrets, type_map, Path(fp_str), _WORKER_PATTERNS_FILE)
     return fp_str, file_findings(secrets, Path(fp_str), type_map)
 
 
