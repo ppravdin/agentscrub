@@ -628,6 +628,17 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
     all_scan_paths = [t.path for t in targets]
 
+    # Pre-compute file count per target so Phase 1 can show "Files" instead
+    # of an internal detector counter. Same data is reused in Phase 2 to
+    # build the redactable-files set, so this isn't extra work — just moved
+    # earlier.
+    _phase1_scanned_files = collect_files(targets)
+    _files_per_target_pre = {t: 0 for t in targets}
+    for fp in _phase1_scanned_files:
+        for t in targets:
+            try: fp.relative_to(t.path); _files_per_target_pre[t] += 1; break
+            except ValueError: pass
+
     # ── phase 1: detect credentials ───────────────────────────────────────────
     p("\n[bold]Phase 1[/bold]  Checking agent directories")
     t1 = time.perf_counter()
@@ -638,11 +649,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         _DETECTORS = ("gitleaks", "trufflehog", "titus")
         _fns       = {"gitleaks": _gitleaks, "trufflehog": _trufflehog, "titus": _titus}
         _sp        = Spinner("dots", style="yellow")
-        # per-target progress: how many detectors have finished this target,
-        # and how many total findings it has accumulated so far
         _t_lock      = _threading.Lock()
         _t_done_n    = {t.path: 0 for t in targets}     # 0..3
-        _t_findings  = {t.path: 0 for t in targets}     # cumulative across detectors
         _t_started   = {t.path: time.perf_counter() for t in targets}
         _t_finished  = {t.path: 0.0 for t in targets}
         by_tool: dict[str, dict] = {t: {} for t in _DETECTORS}
@@ -653,17 +661,18 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                             header_style="bold dim")
                 tbl.add_column("",        min_width=3)
                 tbl.add_column("Tool",    min_width=20)
-                tbl.add_column("Findings", justify="right")
+                tbl.add_column("Files",   justify="right")
                 tbl.add_column("Time",    style="dim")
                 for t in targets:
+                    files_n = f"{_files_per_target_pre[t]:,}"
                     done_n = _t_done_n[t.path]
                     if done_n >= len(_DETECTORS):
                         elapsed = _t_finished[t.path] - _t_started[t.path]
                         tbl.add_row("[bold green]✓[/bold green]", t.display,
-                                    f"{_t_findings[t.path]:,}", f"{elapsed:.0f}s")
+                                    files_n, f"{elapsed:.0f}s")
                     else:
                         elapsed = time.perf_counter() - _t_started[t.path]
-                        tbl.add_row(_sp, t.display, "…", f"{elapsed:.0f}s")
+                        tbl.add_row(_sp, t.display, files_n, f"{elapsed:.0f}s")
                 yield tbl
 
         def _run_one(detector_name: str, fn) -> dict[str, str]:
@@ -673,7 +682,6 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 out.update(result)
                 with _t_lock:
                     _t_done_n[target.path] += 1
-                    _t_findings[target.path] += len(result)
                     if _t_done_n[target.path] == len(_DETECTORS):
                         _t_finished[target.path] = time.perf_counter()
             return out
@@ -736,7 +744,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
         managed = [p for p in managed if _is_associated(p)]
 
-    scanned_files = sorted(set(collect_files(targets) + managed))
+    scanned_files = sorted(set(_phase1_scanned_files + managed))
 
     if RICH:
         with Progress(
@@ -909,9 +917,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                             f"{r/tot*100:.1f}%" if tot else "")
             _CON.print(tbl)
             _CON.print(
-                f"  [bold]{len(flagged_redactable):,}[/bold] files "
-                f"[dim]·[/dim] "
-                f"[bold]{len(redactable_secrets):,}[/bold] secrets "
+                f"  [bold]{len(redactable_secrets):,}[/bold] secrets "
+                f"[dim]in[/dim] "
+                f"[bold]{len(flagged_redactable):,}[/bold] files "
                 f"[dim]·[/dim] "
                 f"[bold]{total_hits_redactable:,}[/bold] hits"
             )
@@ -1054,7 +1062,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             g.add_column()
             g.add_column()
             g.add_row("  agentscrub run",
-                      f"redact {len(flagged_redactable):,} files after confirmation")
+                      f"redact {len(redactable_secrets):,} secrets in {len(flagged_redactable):,} files after confirmation")
             g.add_row("",
                       f"[dim]backup created first, last {max_backups} kept[/dim]")
             g.add_row("  agentscrub run --yes",
@@ -1062,7 +1070,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             _CON.print(g)
         else:
             print(f"\nNext steps:", flush=True)
-            print(f"  agentscrub run        redact {len(flagged_redactable):,} files after confirmation", flush=True)
+            print(f"  agentscrub run        redact {len(redactable_secrets):,} secrets in {len(flagged_redactable):,} files after confirmation", flush=True)
             print(f"                        backup created first, last {max_backups} kept", flush=True)
             print( "  agentscrub run --yes  redact without confirmation", flush=True)
         p()
@@ -1081,8 +1089,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
     # ── confirm ───────────────────────────────────────────────────────────────
     if not skip_confirm:
-        p(f"\n[bold yellow]About to redact {len(flagged_redactable):,} files "
-          f"across {len(targets)} tool(s).[/bold yellow]")
+        p(f"\n[bold yellow]About to redact {len(redactable_secrets):,} secrets "
+          f"across {len(flagged_redactable):,} files.[/bold yellow]")
         p("[dim]A rotating backup will be created first "
           f"(keeping last {max_backups}).[/dim]")
         try:
@@ -1104,7 +1112,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # ── phase 3: redact text ──────────────────────────────────────────────────
     # Only rewrite files containing high-precision tokens; loose-rule matches
     # ride along in the audit report but stay untouched.
-    p(f"\n[bold]Phase 3[/bold]  Redacting {len(flagged_redactable):,} files  "
+    p(f"\n[bold]Phase 3[/bold]  Redacting {len(redactable_secrets):,} secrets "
+      f"in {len(flagged_redactable):,} files  "
       f"[dim]({WORKERS} workers)[/dim]")
     t3 = time.perf_counter()
     worker_args = [(str(fp), redactable_secrets, False) for fp in flagged_redactable]
