@@ -37,8 +37,8 @@ agentscrub schedule install
 ## How it works
 
 ```mermaid
-flowchart LR
-    A[Agent dirs<br/>~/.claude, ~/.codex,<br/>~/.cursor, ...] --> B[3 scanners<br/>find secrets]
+flowchart TD
+    A[Agent dirs<br/>~/.claude, ~/.codex, ~/.cursor, ...] --> B[3 scanners find secrets]
     B --> C{Live auth /<br/>MCP file?}
     C -->|Yes| D[Reported<br/>Never modified]
     C -->|No| E[Backup +<br/>Redact in place]
