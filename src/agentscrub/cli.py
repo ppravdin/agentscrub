@@ -575,20 +575,18 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # ── header ────────────────────────────────────────────────────────────────
     mode = ("[bold yellow] SCAN READ-ONLY [/bold yellow]" if dry_run
             else "[bold green] LIVE [/bold green]")
+    n_tools = len(targets)
+    tool_word = "directory" if n_tools == 1 else "directories"
     if RICH:
         g = Table.grid(padding=(0, 2))
         g.add_column(style="dim")
         g.add_column()
         g.add_row("", f"[bold]agentscrub[/bold]  {mode}")
-        g.add_row("", "")
-        for t in targets:
-            g.add_row(t.display, f"[dim]{t.path}[/dim]")
-        g.add_row("workers", str(WORKERS))
+        g.add_row("", f"[dim]{n_tools} agent {tool_word}  ·  {WORKERS} workers[/dim]")
         _CON.print(Panel(g, box=box.ROUNDED, padding=(0, 1), expand=False))
     else:
         print(f"\n=== agentscrub {'[SCAN]' if dry_run else '[LIVE]'} ===", flush=True)
-        for t in targets:
-            print(f"  {t.display:<22} {t.path}", flush=True)
+        print(f"  {n_tools} agent {tool_word}, {WORKERS} workers", flush=True)
 
     all_scan_paths = [t.path for t in targets]
 
