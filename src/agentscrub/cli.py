@@ -879,25 +879,21 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 try: fp.relative_to(t.path); redact_per_target[t] += 1; break
                 except ValueError: pass
 
-        # Build the redactable-types breakdown by FILE count, not token count.
-        # Token counts (45 JWT + 37 DockerHub + 24 NPM = 106) live in different
-        # units from the action ("redact 52 files"), which made the bar chart
-        # look contradictory. File counts use the same unit as the prompt:
-        # each bar = "N of the 52 redactable files contain this token type".
-        # findings_redactable_only is computed below; build it here too.
-        findings_redactable_only_phase2: dict[Path, list[dict[str, object]]] = {
-            fp: [f for f in findings_by_file.get(fp, [])
-                 if is_high_precision_label(f["type"])]
-            for fp in flagged_redactable
-        }
-        files_per_type: dict[str, int] = {}
-        for fp, fl in findings_redactable_only_phase2.items():
-            seen_types = {f["type"] for f in fl}
-            for t in seen_types:
-                files_per_type[t] = files_per_type.get(t, 0) + 1
-        type_counts_redactable = sorted(
-            files_per_type.items(), key=lambda x: -x[1]
-        )[:6]
+        # Collect the distinct token-type names appearing in redactable files,
+        # plus the total hit count (occurrences) for the headline. We commit
+        # to three numbers on screen — files, secrets, hits — and nothing
+        # else with numeric values.
+        type_names_redactable: list[str] = []
+        seen_types: set[str] = set()
+        total_hits_redactable = 0
+        for fp in flagged_redactable:
+            for f in findings_by_file.get(fp, []):
+                t = f["type"]
+                if is_high_precision_label(t):
+                    if t not in seen_types:
+                        seen_types.add(t)
+                        type_names_redactable.append(t)
+                    total_hits_redactable += int(f.get("hits", 0) or 0)
 
         if RICH:
             _CON.print()
@@ -914,22 +910,21 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                             f"{r/tot*100:.1f}%" if tot else "")
             _CON.print(tbl)
             _CON.print(
-                f"  [bold]{len(flagged_redactable):,}[/bold] files to redact"
+                f"  [bold]{len(flagged_redactable):,}[/bold] files "
+                f"[dim]·[/dim] "
+                f"[bold]{len(redactable_secrets):,}[/bold] secrets "
+                f"[dim]·[/dim] "
+                f"[bold]{total_hits_redactable:,}[/bold] hits"
             )
+            if type_names_redactable:
+                _CON.print(
+                    f"  [dim]{', '.join(type_names_redactable)}[/dim]"
+                )
             if flagged_lowconf_only:
                 _CON.print(
-                    f"  [dim]{len(flagged_lowconf_only):,} more have only "
+                    f"  [dim]{len(flagged_lowconf_only):,} more files have only "
                     f"loose-rule matches (audit only — not rewritten)[/dim]"
                 )
-
-            if type_counts_redactable:
-                _CON.print(
-                    f"\n[bold]Token types in those files[/bold]"
-                    f"  [dim](file count per type — a file may have several)[/dim]\n"
-                )
-                _bars(type_counts_redactable,
-                      total=len(flagged_redactable),
-                      count_label="Files")
         else:
             for t in targets:
                 r = redact_per_target[t]
