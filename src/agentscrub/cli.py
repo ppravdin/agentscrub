@@ -97,6 +97,7 @@ def _write_scan_report(
     source_file_counts: list[tuple[str, int, int]],
     total_scanned_files: int,
     unique_patterns: int,
+    flagged_redactable_count: int = 0,
 ) -> tuple[Path, Path]:
     from .redact import is_low_signal_label
 
@@ -250,7 +251,7 @@ def _write_scan_report(
         fh.write("Files changed by this scan:   0 (read-only)\n")
         fh.write("\nRun next\n")
         fh.write("========\n")
-        fh.write(f"agentscrub run        redact {len(flagged):,} files after confirmation\n")
+        fh.write(f"agentscrub run        redact {flagged_redactable_count:,} files after confirmation\n")
         fh.write("agentscrub run --yes  redact immediately, no prompt\n")
         fh.write("\nWhat is protected\n")
         fh.write("=================\n")
@@ -545,10 +546,13 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         collect_managed_credential_files,
         file_findings,
         grep_filter,
+        is_high_precision_label,
         is_managed_credential_file,
+        partition_secrets_by_precision,
         redact_file,
         redact_sqlite,
         top_exposed,
+        _short_label,
     )
     from .backup import backup
 
@@ -851,6 +855,26 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             print(f"  building report ({len(report_paths):,} files)...", flush=True)
             findings_by_file = _build_findings_parallel()
 
+        # ── precision split (before report write, since _write_scan_report
+        # uses the count) ─────────────────────────────────────────────────────
+        # Loose detector rules (Generic Secret, Postgres URI, Sourcegraph,
+        # Bearer Token, URL Credential, Privacy, etc.) false-fire on plugin
+        # slugs, beta-flag identifiers, code samples, and JSON dumps. Rewriting
+        # those corrupts user data far worse than missing a real secret. Only
+        # labels in _HIGH_PRECISION_LABELS get redacted; everything else is
+        # reported here and in the audit but never modified.
+        redactable_secrets, report_only_secrets = partition_secrets_by_precision(
+            all_secrets, _all_typed
+        )
+        flagged_redactable: list[Path] = []
+        flagged_lowconf_only: list[Path] = []
+        for fp in flagged:
+            f_list = findings_by_file.get(fp, [])
+            if any(is_high_precision_label(f["type"]) for f in f_list):
+                flagged_redactable.append(fp)
+            else:
+                flagged_lowconf_only.append(fp)
+
         summary_report_path, full_report_path = _write_scan_report(
             targets=targets,
             flagged=flagged,
@@ -862,10 +886,35 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             ],
             total_scanned_files=len(redactable_files),
             unique_patterns=len(all_secrets),
+            flagged_redactable_count=len(flagged_redactable),
         )
 
         p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
         p(f"[bold]Full audit[/bold]      [dim]{full_report_path}[/dim]")
+
+        if RICH:
+            _CON.print()
+            _CON.print(
+                f"  [bold]{len(redactable_secrets):,}[/bold] high-precision tokens  "
+                f"[dim]·[/dim]  [bold]{len(flagged_redactable):,}[/bold] files to redact"
+            )
+            if report_only_secrets:
+                _CON.print(
+                    f"  [dim]{len(report_only_secrets):,} low-confidence patterns "
+                    f"in {len(flagged_lowconf_only):,} files reported only "
+                    f"(loose rules — not rewritten to avoid corrupting your data)[/dim]"
+                )
+        else:
+            print(f"  high-precision tokens: {len(redactable_secrets):,}, "
+                  f"redact {len(flagged_redactable):,} files", flush=True)
+            if report_only_secrets:
+                print(f"  low-confidence (report only): {len(report_only_secrets):,} "
+                      f"patterns in {len(flagged_lowconf_only):,} files", flush=True)
+    else:
+        # No findings at all — nothing to partition; still set defaults
+        # so the rest of the function compiles without unbound names.
+        redactable_secrets, report_only_secrets = set(), set()
+        flagged_redactable, flagged_lowconf_only = [], []
 
     if not flagged:
         if preserved:
@@ -961,7 +1010,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             g.add_column()
             g.add_column()
             g.add_row("  agentscrub run",
-                      f"redact {len(flagged):,} files after confirmation")
+                      f"redact {len(flagged_redactable):,} files after confirmation")
             g.add_row("",
                       f"[dim]backup created first, last {max_backups} kept[/dim]")
             g.add_row("  agentscrub run --yes",
@@ -969,15 +1018,26 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             _CON.print(g)
         else:
             print(f"\nNext steps:", flush=True)
-            print(f"  agentscrub run        redact {len(flagged):,} files after confirmation", flush=True)
+            print(f"  agentscrub run        redact {len(flagged_redactable):,} files after confirmation", flush=True)
             print(f"                        backup created first, last {max_backups} kept", flush=True)
             print( "  agentscrub run --yes  redact without confirmation", flush=True)
         p()
         return
 
+    # ── early-exit: nothing high-precision to redact ──────────────────────────
+    if not flagged_redactable:
+        if flagged_lowconf_only:
+            p(f"\n[bold green]Nothing to redact.[/bold green]  "
+              f"[dim]{len(flagged_lowconf_only):,} files have only "
+              f"low-confidence patterns; reported in the audit, "
+              f"not rewritten.[/dim]\n")
+        else:
+            p("\n[bold green]Clean — no files contain credential patterns.[/bold green]\n")
+        return
+
     # ── confirm ───────────────────────────────────────────────────────────────
     if not skip_confirm:
-        p(f"\n[bold yellow]About to redact {len(flagged):,} files "
+        p(f"\n[bold yellow]About to redact {len(flagged_redactable):,} files "
           f"across {len(targets)} tool(s).[/bold yellow]")
         p("[dim]A rotating backup will be created first "
           f"(keeping last {max_backups}).[/dim]")
@@ -998,10 +1058,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         p(f"  [green]✓[/green]  {b.display:<22} [dim]{b.path}[/dim]")
 
     # ── phase 3: redact text ──────────────────────────────────────────────────
-    p(f"\n[bold]Phase 3[/bold]  Redacting {len(flagged):,} files  "
+    # Only rewrite files containing high-precision tokens; loose-rule matches
+    # ride along in the audit report but stay untouched.
+    p(f"\n[bold]Phase 3[/bold]  Redacting {len(flagged_redactable):,} files  "
       f"[dim]({WORKERS} workers)[/dim]")
     t3 = time.perf_counter()
-    worker_args = [(str(fp), all_secrets, False) for fp in flagged]
+    worker_args = [(str(fp), redactable_secrets, False) for fp in flagged_redactable]
     total_redactions = 0
     errors: list[str] = []
 
@@ -1019,7 +1081,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             TimeElapsedColumn(),
             console=_CON,
         ) as prog:
-            task = prog.add_task("redacting", total=len(flagged))
+            task = prog.add_task("redacting", total=len(flagged_redactable))
             with Pool(WORKERS) as pool:
                 for path_str, count, err in pool.imap_unordered(redact_file, worker_args):
                     prog.advance(task)
@@ -1046,7 +1108,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
     # ── phase 4: sqlite ───────────────────────────────────────────────────────
     p("\n[bold]Phase 4[/bold]  SQLite databases")
-    sqlite_total, sqlite_results = redact_sqlite(all_secrets, targets, dry_run=False)
+    sqlite_total, sqlite_results = redact_sqlite(redactable_secrets, targets, dry_run=False)
     if not sqlite_results:
         p("  [dim]none found[/dim]")
     for db_path, count in sqlite_results:

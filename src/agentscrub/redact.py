@@ -260,6 +260,56 @@ def is_low_signal_label(label: str) -> bool:
     return label in _LOW_SIGNAL_LABELS
 
 
+# Labels we trust enough to RUN actually rewrite text on. Everything else is
+# scanned + reported but never modified. Rules are listed here when the
+# matching token format has a distinctive prefix / structural validation
+# (e.g. AWS keys with AKIA + checksum, GitHub PATs with ghp_ + 36 chars,
+# JWT 3-part validation, PEM blocks). Loose patterns ("Generic Secret",
+# "Postgres URI", "Sourcegraph", "Bearer Token", "URL Credential") are
+# excluded because in practice they false-fire on plugin slugs, beta-flag
+# strings, code samples, and JSON dumps inside chat-session logs — and
+# rewriting those corrupts user data far worse than missing a real secret.
+_HIGH_PRECISION_LABELS = frozenset({
+    "JWT",
+    "GitHub PAT", "GitHub OAuth", "GitHub App", "GitHub Token",
+    "OpenAI Key", "Anthropic Key",
+    "AWS Key",
+    "GCP Key", "Google Key", "Google OAuth", "Google OAuth Secret",
+    "Slack Token", "Slack Webhook",
+    "Stripe Key",
+    "SSH Key", "Private Key",
+    "NpmToken", "Npm Token",
+    "Dockerhub",
+    "PostHog Key",
+    "Postmark Token",
+})
+
+
+def is_high_precision_label(label: str) -> bool:
+    return label in _HIGH_PRECISION_LABELS
+
+
+def partition_secrets_by_precision(
+    secrets: set[str],
+    type_map: dict[str, str],
+) -> tuple[set[str], set[str]]:
+    """Split secrets into (redactable, report_only) based on rule precision.
+
+    Returns:
+      redactable  — high-precision tokens, safe to rewrite to [REDACTED]
+      report_only — everything else; reported in the audit but never written
+    """
+    redactable: set[str] = set()
+    report_only: set[str] = set()
+    for s in secrets:
+        label = _short_label(type_map.get(s, "unknown"))
+        if is_high_precision_label(label):
+            redactable.add(s)
+        else:
+            report_only.add(s)
+    return redactable, report_only
+
+
 def _short_label(label: str) -> str:
     low = label.lower()
     if low in _LABEL_MAP:

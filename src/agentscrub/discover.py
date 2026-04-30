@@ -27,10 +27,11 @@ _REGISTRY: list[dict] = [
         dirs=["~/.claude"],
         # cache/ and marketplaces/ under ~/.claude/plugins/ are downloaded
         # public artifacts (Anthropic's plugin catalog + cached plugin releases).
-        # They contain no user history but are full of pattern-shape collisions
-        # (plugin slugs, GitHub URLs, commit SHAs) that the detectors flag as
-        # Sourcegraph / Postgres URI / etc. Skip them.
-        exclude_dirs={"cache", "marketplaces"},
+        # telemetry/ holds Claude Code's local analytics queue (failed-event
+        # buffers full of beta-flag identifiers, GUIDs, hyphenated build
+        # strings) which detectors heavily false-positive on.
+        # All three are pattern-shape noise with no user history.
+        exclude_dirs={"cache", "marketplaces", "telemetry"},
         exclude_files={".credentials.json", "settings.json"},
     ),
     dict(
