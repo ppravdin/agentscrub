@@ -104,13 +104,12 @@ def _write_scan_report(
     total_scanned_files: int,
     unique_patterns: int,
     flagged_redactable_count: int = 0,
-) -> tuple[Path, Path]:
+) -> Path:
     from .redact import is_low_signal_label
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     created = datetime.now()
     stamp = created.strftime('%Y%m%d-%H%M%S')
-    summary_path = LOG_DIR / f"scan-{stamp}-summary.txt"
     full_path = LOG_DIR / f"scan-{stamp}-full.txt"
 
     def _file_stats(fp: Path) -> tuple[int, int, int, list[dict[str, object]], list[dict[str, object]]]:
@@ -323,34 +322,16 @@ def _write_scan_report(
         _write_group(fh, "Live auth/MCP files preserved (with credential-like findings)", preserved_with_credentials)
         _write_group(fh, "Live auth/MCP files preserved (low-signal matches only)", preserved_low_signal_only)
 
-    with summary_path.open("w", encoding="utf-8") as fh:
-        _write_header(fh, "agentscrub scan summary")
-        fh.write(f"full audit: {full_path}\n")
+    with full_path.open("w", encoding="utf-8") as fh:
+        _write_header(fh, "agentscrub full scan audit")
         _write_result(fh)
         _write_by_tool(fh)
         _write_source_rollup(fh)
         _write_pattern_rollup(fh)
         _write_preserved(fh)
-        _write_group(
-            fh,
-            "Highest priority redactable files",
-            ordered_flagged,
-            limit=5,
-            credential_limit=12,
-            noisy_limit=5,
-            more_hint=f"in full audit: {full_path}",
-        )
-
-    with full_path.open("w", encoding="utf-8") as fh:
-        _write_header(fh, "agentscrub full scan audit")
-        fh.write(f"summary report: {summary_path}\n")
-        _write_result(fh)
-        _write_by_tool(fh)
-        _write_source_rollup(fh)
-        _write_preserved(fh)
         _write_group(fh, "Full redactable file audit", ordered_flagged)
 
-    return summary_path, full_path
+    return full_path
 
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
@@ -806,7 +787,6 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # matches.
 
     findings_by_file: dict[Path, list[dict[str, object]]] = {}
-    summary_report_path: Path | None = None
     full_report_path: Path | None = None
     if flagged or preserved:
         from .redact import file_findings_worker, _init_findings_worker
@@ -880,7 +860,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             else:
                 flagged_lowconf_only.append(fp)
 
-        summary_report_path, full_report_path = _write_scan_report(
+        full_report_path = _write_scan_report(
             targets=targets,
             flagged=flagged,
             preserved=preserved,
@@ -953,8 +933,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             print(f"  {len(flagged_redactable):,} files to redact",
                   flush=True)
 
-        p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
-        p(f"[bold]Full audit[/bold]      [dim]{full_report_path}[/dim]")
+        p(f"\n[bold]Full audit[/bold]  [dim]{full_report_path}[/dim]")
     else:
         # No findings at all — nothing to partition; still set defaults
         # so the rest of the function compiles without unbound names.
