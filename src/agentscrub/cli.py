@@ -1001,42 +1001,75 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             keep = max(8, n - 1)
             return "…" + s[-keep:]
 
-        if RICH:
-            if _CON.width < 100:
-                source_w = 11
-                path_w = max(24, _CON.width - 30)
+        # Parse the glued 'Type · preview · #hash' string into 3 separate
+        # columns so each piece sits in its own visual lane.
+        def _split_proof(proof: str) -> tuple[str, str, str]:
+            parts = proof.split(" · ")
+            if len(parts) >= 3:
+                return parts[0], " · ".join(parts[1:-1]), parts[-1]
+            if len(parts) == 2:
+                return parts[0], "—", parts[1]
+            return proof, "—", ""
 
-                def _clip(s: str, n: int) -> str:
-                    return s if len(s) <= n else s[:n - 1] + "…"
+        # Hide the Source column when every exposed file comes from the same
+        # tool — repeating "Claude Code" 5 times is just noise.
+        unique_sources = {_resolve(fp)[0] for fp, *_ in exposed}
+        show_source = len(unique_sources) > 1
 
-                _CON.print(f"  {'Source':<{source_w}} {'Secrets':>7} {'Hits':>6}  File")
-                _CON.print("  " + "─" * min(_CON.width - 2, source_w + path_w + 18))
-                for fp, uniq, hits, proof in exposed:
-                    tool_name, rel = _resolve(fp)
-                    _CON.print(
-                        f"  {_clip(tool_name, source_w):<{source_w}} "
-                        f"{uniq:>7} {hits:>6,}  {_trunc_path(rel, path_w)}",
-                        markup=False,
-                    )
-                    _CON.print(
-                        f"  {'':<{source_w}} {'':>7} {'':>6}  type: {proof}",
-                        markup=False,
-                    )
-            else:
-                tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold dim")
-                tbl.add_column("Source",  style="dim",     min_width=12, max_width=18, no_wrap=True)
-                tbl.add_column("File",                     min_width=24, max_width=56, overflow="ellipsis", no_wrap=True)
-                tbl.add_column("Secrets", justify="right", style="bold yellow", no_wrap=True)
-                tbl.add_column("Hits",    justify="right", style="dim", no_wrap=True)
-                tbl.add_column("Type",    style="dim",     min_width=24, max_width=44, overflow="ellipsis", no_wrap=True)
-                for fp, uniq, hits, proof in exposed:
-                    tool_name, rel = _resolve(fp)
-                    tbl.add_row(tool_name, _trunc_path(rel), str(uniq), f"{hits:,}", proof)
-                _CON.print(tbl)
+        # Adaptive layout: wide-table on >=110 col terminals; 2-line compact
+        # 'card' layout on narrower terminals so nothing gets ellipsis-truncated.
+        wide_layout = RICH and _CON.width >= 110
+
+        if wide_layout:
+            tbl = Table(
+                box=box.HORIZONTALS,
+                show_header=True,
+                header_style="bold cyan",
+                padding=(0, 1),
+                pad_edge=False,
+            )
+            if show_source:
+                tbl.add_column("Source",   style="dim",                       width=14, no_wrap=True)
+            tbl.add_column("File",                                             min_width=32, max_width=56, overflow="ellipsis", no_wrap=True)
+            tbl.add_column("Secrets",  justify="right", style="bold yellow",  width=8,  no_wrap=True)
+            tbl.add_column("Kind",     style="cyan",                          width=14, no_wrap=True)
+            tbl.add_column("Preview",  style="bold green",                    width=20, no_wrap=True)
+            for fp, uniq, hits, proof in exposed:
+                tool_name, rel = _resolve(fp)
+                kind, preview, _h = _split_proof(proof)
+                row = []
+                if show_source:
+                    row.append(tool_name)
+                row.extend([_trunc_path(rel), str(uniq), kind, preview])
+                tbl.add_row(*row)
+            _CON.print(tbl)
+        elif RICH:
+            # Compact 2-line card per file. Line 1 = file path + tool. Line 2 =
+            # secrets count, kind, preview, all on one line with bullet
+            # separators and color so the eye lands on the key bits.
+            for i, (fp, uniq, hits, proof) in enumerate(exposed):
+                tool_name, rel = _resolve(fp)
+                kind, preview, _h = _split_proof(proof)
+                path_w = _CON.width - 4
+                _CON.print(
+                    f"  [white]{_trunc_path(rel, path_w)}[/white]"
+                    + (f"  [dim]{tool_name}[/dim]" if show_source else ""),
+                    markup=True,
+                )
+                _CON.print(
+                    f"    [bold yellow]{uniq:>3}[/bold yellow][dim] secrets [/dim]"
+                    f"[dim]·[/dim] [cyan]{kind}[/cyan] "
+                    f"[dim]·[/dim] [bold green]{preview}[/bold green]"
+                )
+                if i < len(exposed) - 1:
+                    _CON.print()  # blank line between cards
         else:
             for fp, uniq, hits, proof in exposed:
                 tool_name, rel = _resolve(fp)
-                print(f"  {uniq:3d} secrets  {hits:6,} hits  [{tool_name}]  {_trunc_path(rel, 48)}  {proof}", flush=True)
+                kind, preview, _h = _split_proof(proof)
+                src = f"[{tool_name}]  " if show_source else ""
+                print(f"  {_trunc_path(rel, 60)}{src}", flush=True)
+                print(f"    {uniq:>3} secrets · {kind} · {preview}", flush=True)
 
     if dry_run:
         p(f"\n[bold yellow]Scan complete — no files modified.[/bold yellow]\n")
