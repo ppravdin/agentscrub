@@ -907,7 +907,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             tbl = Table(box=None, show_header=True, padding=(0, 2),
                         header_style="bold dim")
             tbl.add_column("Tool",     style="dim", min_width=20)
-            tbl.add_column("Redact",   justify="right", style="bold yellow")
+            tbl.add_column("Exposed",  justify="right", style="bold yellow")
             tbl.add_column("Scanned",  justify="right", style="dim")
             tbl.add_column("Pct",      justify="right", style="dim")
             for t in targets:
@@ -921,13 +921,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 f"[dim]in[/dim] "
                 f"[bold]{len(flagged_redactable):,}[/bold] files "
                 f"[dim]·[/dim] "
-                f"[bold]{total_hits_redactable:,}[/bold] hits"
+                f"[bold]{total_hits_redactable:,}[/bold] times"
             )
-            if flagged_lowconf_only:
-                _CON.print(
-                    f"  [dim]{len(flagged_lowconf_only):,} more files have only "
-                    f"loose-rule matches (audit only — not rewritten)[/dim]"
-                )
 
             if type_counts_redactable:
                 _CON.print()
@@ -943,10 +938,6 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                       f"  {t.display:<22}  0", flush=True)
             print(f"  {len(flagged_redactable):,} files to redact",
                   flush=True)
-            if flagged_lowconf_only:
-                print(f"  {len(flagged_lowconf_only):,} more have only "
-                      "loose-rule matches (audit only — not rewritten)",
-                      flush=True)
 
         p(f"\n[bold]Summary report[/bold]  [dim]{summary_report_path}[/dim]")
         p(f"[bold]Full audit[/bold]      [dim]{full_report_path}[/dim]")
@@ -1044,7 +1035,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 tbl.add_column("File",                     min_width=24, max_width=56, overflow="ellipsis", no_wrap=True)
                 tbl.add_column("Secrets", justify="right", style="bold yellow", no_wrap=True)
                 tbl.add_column("Hits",    justify="right", style="dim", no_wrap=True)
-                tbl.add_column("Type",    style="dim",     min_width=16, max_width=30, overflow="ellipsis", no_wrap=True)
+                tbl.add_column("Type",    style="dim",     min_width=24, max_width=44, overflow="ellipsis", no_wrap=True)
                 for fp, uniq, hits, proof in exposed:
                     tool_name, rel = _resolve(fp)
                     tbl.add_row(tool_name, _trunc_path(rel), str(uniq), f"{hits:,}", proof)

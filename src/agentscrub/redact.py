@@ -338,28 +338,35 @@ def _short_label(label: str) -> str:
 
 
 def _proof(secret: str, label: str) -> str:
-    """Safe display string for a secret.
+    """Safe display string for a secret: 'Type · prefix…suffix · #hash'.
 
-    JWT (eyJ prefix) → 'JWT · eyJ… · #hash'         (prefix is diagnostic)
-    Other high-risk  → 'Type · #hash'                (no confusing shape hint)
-    Low-risk         → value as-is or truncated
+    The user sees enough of the actual value to recognise whether it's
+    real (their own AWS key, postgres URI, etc.) without us printing the
+    whole credential. Preview length scales with secret length, and
+    leading/trailing whitespace is stripped so newlines don't leak into
+    the tail.
     """
-    label_low = label.lower()
-    is_jwt = secret.startswith("eyJ")
-    is_high = (
-        any(kw in label_low for kw in _HIGH_RISK_KEYWORDS)
-        or is_jwt
-        or (len(secret) >= 20 and len(set(secret)) >= 8)
-    )
-    if not is_high:
-        return secret[:8] + "…" + secret[-4:] if len(secret) > 20 else secret
     short = _short_label(label)
     h = hashlib.sha256(secret.encode()).hexdigest()[:8]
-    # Only show eyJ prefix when the scanner itself classifies it as JWT —
-    # many non-JWT tokens are base64-encoded and also start with eyJ.
-    if is_jwt and short == "JWT":
-        return f"{short} · eyJ… · #{h}"
-    return f"{short} · #{h}"
+
+    s = secret.strip()
+    n = len(s)
+    if n < 8:
+        return f"{short} · #{h}"
+
+    if n >= 40:
+        head, tail = 6, 4
+    elif n >= 20:
+        head, tail = 4, 2
+    elif n >= 12:
+        head, tail = 3, 1
+    else:
+        head, tail = 2, 1
+
+    preview = f"{s[:head]}…{s[-tail:]}"
+    # Strip any remaining control chars in the preview (rare; defensive).
+    preview = "".join(c if c.isprintable() else "·" for c in preview)
+    return f"{short} · {preview} · #{h}"
 
 
 def file_findings(
