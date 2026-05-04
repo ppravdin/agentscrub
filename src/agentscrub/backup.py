@@ -132,11 +132,26 @@ def rotate_logs(max_keep: int = 30) -> None:
         old.unlink(missing_ok=True)
 
 
-def rollback(b: Backup) -> bool:
-    """Restore backup b → b.source. Returns True on success."""
+def rollback(b: Backup) -> tuple[bool, str]:
+    """Restore backup b → b.source. Returns (success, diagnostic_message).
+
+    Uses --checksum, NOT the rsync default size+mtime quick-check.
+
+    The redactor rewrites files in place. After a redact, the file mtime is
+    updated and the file size often differs only slightly. Empirically,
+    rsync's quick-check has been observed to silently skip such files,
+    leaving them in a redacted state even though rollback reported success.
+    --checksum forces a real content comparison. It's slower but correct.
+
+    Stderr is returned (not swallowed) so callers can surface real
+    diagnostics instead of just 'complete / failed'.
+    """
     target = ScanTarget(path=b.source, tool=b.tool, display=b.display)
     r = subprocess.run(
-        ["rsync", "-a", "--delete", *_protected_excludes(target), str(b.path) + "/", str(b.source) + "/"],
+        ["rsync", "-a", "--checksum", "--delete",
+         *_protected_excludes(target),
+         str(b.path) + "/", str(b.source) + "/"],
         capture_output=True, text=True,
     )
-    return r.returncode == 0
+    msg = r.stderr.strip()
+    return r.returncode == 0, msg

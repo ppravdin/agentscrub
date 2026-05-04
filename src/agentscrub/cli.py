@@ -530,11 +530,16 @@ def cmd_rollback(ns: argparse.Namespace) -> None:
 
     chosen = backups[idx]
     p(f"\n[yellow]Restoring {chosen.path} → {chosen.source} …[/yellow]")
-    ok = rollback(chosen)
+    ok, stderr = rollback(chosen)
     if ok:
         p("[bold green]✓[/bold green]  Rollback complete.\n")
+        if stderr:
+            p(f"[dim]  rsync notes:\n{stderr}[/dim]\n")
     else:
-        p("[bold red]✗[/bold red]  rsync failed — check manually.\n")
+        p("[bold red]✗[/bold red]  rsync failed:\n")
+        if stderr:
+            p(f"[red]{stderr}[/red]\n")
+        p("[dim]Check manually with the path above.[/dim]\n")
 
 
 # ── scan & run ────────────────────────────────────────────────────────────────
