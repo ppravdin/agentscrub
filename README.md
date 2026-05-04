@@ -184,7 +184,7 @@ agentscrub run --only claude
 agentscrub run --only claude,codex
 agentscrub --list-tools             # show every known tool ID
 
-# Keep more backups (default: 5)
+# Keep more backups (default: 3)
 agentscrub run --max-backups 10
 ```
 
@@ -203,7 +203,7 @@ Every live run creates a backup before touching anything:
     ...
 ```
 
-Oldest backups are rotated out automatically (default: keep 5 per tool).
+Oldest backups are rotated out automatically (default: keep 3 per tool).
 
 To restore:
 

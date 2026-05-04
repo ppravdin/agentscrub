@@ -55,7 +55,7 @@ class Backup:
         return r.stdout.split()[0] if r.returncode == 0 else "?"
 
 
-def backup(targets: list[ScanTarget], max_keep: int = 5) -> list[Backup]:
+def backup(targets: list[ScanTarget], max_keep: int = 3) -> list[Backup]:
     """
     rsync each target into BACKUP_ROOT/<tool>/<timestamp>/.
     Rotates: keeps only the newest max_keep per tool.

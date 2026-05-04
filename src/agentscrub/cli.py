@@ -278,7 +278,7 @@ def _write_scan_report(
         fh.write("- Proof hashes let you recognize the same secret across files without exposing it.\n")
         if preserved:
             fh.write("- Live auth/MCP credential stores are listed below but skipped by default.\n")
-        fh.write("- A backup is created before redaction; the last 5 backups are kept.\n")
+        fh.write("- A backup is created before redaction; the last 3 backups are kept.\n")
 
     def _write_by_tool(fh) -> None:
         if not source_file_counts:
@@ -382,8 +382,8 @@ examples:
                         help="limit to specific tool(s); repeatable or comma-separated. "
                              "Examples: --only claude   --only claude,codex   "
                              "Run 'agentscrub --list-tools' for available names.")
-        ap.add_argument("--max-backups", type=int, default=5, metavar="N",
-                        help="backups to keep per tool (default: 5)")
+        ap.add_argument("--max-backups", type=int, default=3, metavar="N",
+                        help="backups to keep per tool (default: 3)")
         if subcmd == "run":
             ap.add_argument("--yes", "-y", action="store_true",
                             help="skip confirmation prompt")
@@ -566,7 +566,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     skip_confirm = getattr(ns, "yes", False)
     extra        = [Path(x).expanduser() for x in getattr(ns, "also", [])]
     only_raw     = getattr(ns, "only", []) or []
-    max_backups  = getattr(ns, "max_backups", 5)
+    max_backups  = getattr(ns, "max_backups", 3)
 
     _print_splash()
 
@@ -979,8 +979,6 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                               type_map=_all_typed,
                               findings_by_file=findings_redactable_only)
     if exposed:
-        p("\n[bold cyan]Top files to redact[/bold cyan]\n")
-
         def _resolve(fp: Path) -> tuple[str, str]:
             for t in targets:
                 try:
@@ -988,6 +986,15 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 except ValueError:
                     pass
             return "?", str(fp)
+
+        # When all exposed files come from a single tool, name it in the
+        # title rather than repeating it as a Source column on every row.
+        unique_sources_in_title = {_resolve(fp)[0] for fp, *_ in exposed}
+        if len(unique_sources_in_title) == 1:
+            only_tool = next(iter(unique_sources_in_title))
+            p(f"\n[bold cyan]Top files to redact[/bold cyan]  [dim]·  {only_tool}[/dim]\n")
+        else:
+            p("\n[bold cyan]Top files to redact[/bold cyan]\n")
 
         def _trunc_path(s: str, n: int = 48) -> str:
             if len(s) <= n:
