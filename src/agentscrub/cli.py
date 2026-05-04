@@ -177,10 +177,24 @@ def _write_scan_report(
     ) -> None:
         ordered = sorted(findings, key=lambda f: (-int(f["hits"]), str(f["type"]).lower(), str(f["proof"])))
         selected = ordered[:limit] if limit else ordered
+        # Each row is column-aligned so the preview sits in its own visual
+        # slot and the eye doesn't have to scan past 'proof=Type · ' noise:
+        #   - <Type:20>   <hits:>6>×  <preview:24>   <#hash>
         for finding in selected:
+            ftype = str(finding["type"])
+            hits  = int(finding["hits"])
+            proof = str(finding["proof"])
+            # proof is either "Type · #hash" (short secret, no preview) or
+            # "Type · preview · #hash". Strip the leading 'Type · ' since
+            # we print Type in its own column already.
+            after_type = proof.split(" · ", 1)[1] if " · " in proof else proof
+            if " · " in after_type:
+                preview, hash_part = after_type.rsplit(" · ", 1)
+            else:
+                preview, hash_part = "—", after_type
             fh.write(
-                f"{indent}- {finding['type']}  hits={finding['hits']}  "
-                f"proof={finding['proof']}\n"
+                f"{indent}- {ftype:<20}  {hits:>6}×   "
+                f"{preview:<24}   {hash_part}\n"
             )
         if limit and len(ordered) > limit:
             fh.write(f"{indent}... {len(ordered) - limit:,} more findings in full audit\n")
