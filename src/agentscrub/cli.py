@@ -1176,40 +1176,57 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
     p(f"  [dim]{time.perf_counter()-t3:.1f}s[/dim]")
 
-    # ── phase 4: sqlite ───────────────────────────────────────────────────────
-    p("\n[bold cyan]Phase 4[/bold cyan]  [bold]SQLite databases[/bold]")
+    # ── phase 4: database history (SQLite/vscdb files) ───────────────────────
+    # Phase 4 cleans embedded session/log databases (e.g. ~/.codex/logs_2.sqlite,
+    # Cursor's state.vscdb). Users don't think 'SQLite' — they think 'history'.
+    p("\n[bold cyan]Phase 4[/bold cyan]  [bold]Cleaning database history[/bold]")
     sqlite_total, sqlite_results = redact_sqlite(redactable_secrets, targets, dry_run=False)
     if not sqlite_results:
-        p("  [dim]none found[/dim]")
+        p("  [dim]no databases found[/dim]")
     for db_path, count in sqlite_results:
         label = str(db_path)
-        for sp in all_scan_paths:
-            try: label = str(db_path.relative_to(sp)); break
-            except ValueError: pass
+        # Find which tool owns this DB so the line reads "Codex CLI · logs_2.sqlite"
+        owning = None
+        for t in targets:
+            try:
+                db_path.relative_to(t.path)
+                owning = t.display
+                label = str(db_path.relative_to(t.path))
+                break
+            except ValueError:
+                continue
+        prefix = f"[dim]{owning} ·[/dim] " if owning else ""
         if count < 0:
-            p(f"  [red]WARN[/red]  {label}: error")
+            p(f"  [red]WARN[/red]  {prefix}{label}: error")
         else:
-            p(f"  [bold green] OK [/bold green]  {label}  [dim]→[/dim]  {count:,}")
+            p(f"  [bold green] OK [/bold green]  {prefix}{label}  [dim]→[/dim]  {count:,}")
 
     # ── summary ───────────────────────────────────────────────────────────────
     elapsed = time.perf_counter() - t_total
     if RICH:
         g = Table.grid(padding=(0, 3))
-        g.add_column(justify="right", style="bold")
+        g.add_column(justify="right", style="bold green")
         g.add_column()
-        g.add_row(f"Done in {elapsed:.0f}s", "")
-        g.add_row(f"{total_redactions:,}", f"replacements in {len(flagged):,} text files")
+        g.add_row(f"[bold green]✓ Done[/bold green]", f"[dim]in {elapsed:.0f}s[/dim]")
+        g.add_row("", "")
+        g.add_row(f"[bold green]{total_redactions:,}[/bold green]",
+                  f"secrets removed from [bold]{len(flagged):,}[/bold] text files")
         if sqlite_total:
-            g.add_row(f"{sqlite_total:,}", "SQLite replacements")
+            g.add_row(f"[bold green]{sqlite_total:,}[/bold green]",
+                      "secrets removed from database history")
+        g.add_row(f"[bold]{max_backups}[/bold]",
+                  f"backups kept  [dim](~/.agentscrub/backups/)[/dim]")
         if errors:
-            g.add_row(f"[red]{len(errors)}[/red]", "[red]files with errors (see above)[/red]")
-        g.add_row(f"{max_backups}", "backups kept  [dim](~/.agentscrub/backups/)[/dim]")
-        _CON.print(Panel(g, box=box.ROUNDED, padding=(0, 1)))
+            g.add_row(f"[red]{len(errors)}[/red]",
+                      "[red]files with errors (see above)[/red]")
+        _CON.print(Panel(g, box=box.ROUNDED, padding=(0, 2),
+                          border_style="green", expand=False, title="[bold green]Scrub complete[/bold green]"))
     else:
-        print(f"\nDone in {elapsed:.0f}s", flush=True)
-        print(f"  {total_redactions:,} replacements in {len(flagged):,} files", flush=True)
+        print(f"\n✓ Done in {elapsed:.0f}s", flush=True)
+        print(f"  {total_redactions:,} secrets removed from {len(flagged):,} files", flush=True)
         if sqlite_total:
-            print(f"  {sqlite_total:,} SQLite replacements", flush=True)
+            print(f"  {sqlite_total:,} secrets removed from database history", flush=True)
+        print(f"  {max_backups} backups kept  (~/.agentscrub/backups/)", flush=True)
         if errors:
             print(f"  {len(errors)} errors", flush=True)
         print(flush=True)
