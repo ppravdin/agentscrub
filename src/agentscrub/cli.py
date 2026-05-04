@@ -635,7 +635,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             except ValueError: pass
 
     # ── phase 1: detect credentials ───────────────────────────────────────────
-    p("\n[bold]Phase 1[/bold]  Checking agent directories")
+    p("\n[bold cyan]Phase 1[/bold cyan]  [bold]Checking agent directories[/bold]")
     t1 = time.perf_counter()
 
     if RICH:
@@ -653,7 +653,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         class _Phase1Live:
             def __rich_console__(self, console, options):
                 tbl = Table(box=None, show_header=True, padding=(0, 2),
-                            header_style="bold dim")
+                            header_style="bold cyan")
                 tbl.add_column("",        min_width=3)
                 tbl.add_column("Tool",    min_width=20)
                 tbl.add_column("Files",   justify="right")
@@ -707,7 +707,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         return
 
     # ── phase 2: scan files ───────────────────────────────────────────────────
-    p("\n[bold]Phase 2[/bold]  Mapping findings to affected files")
+    p("\n[bold cyan]Phase 2[/bold cyan]  [bold]Mapping findings to affected files[/bold]")
     t2 = time.perf_counter()
 
     managed = collect_managed_credential_files()
@@ -899,7 +899,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         if RICH:
             _CON.print()
             tbl = Table(box=None, show_header=True, padding=(0, 2),
-                        header_style="bold dim")
+                        header_style="bold cyan")
             tbl.add_column("Tool",     style="dim", min_width=20)
             tbl.add_column("Exposed",  justify="right", style="bold yellow")
             tbl.add_column("Scanned",  justify="right", style="dim")
@@ -933,7 +933,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             print(f"  {len(flagged_redactable):,} files to redact",
                   flush=True)
 
-        p(f"\n[bold]Full audit[/bold]  [dim]{full_report_path}[/dim]")
+        p(f"\n[bold cyan]Full audit[/bold cyan]  [dim]{full_report_path}[/dim]")
     else:
         # No findings at all — nothing to partition; still set defaults
         # so the rest of the function compiles without unbound names.
@@ -974,7 +974,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                               type_map=_all_typed,
                               findings_by_file=findings_redactable_only)
     if exposed:
-        p("\n[bold]Top files to redact[/bold]\n")
+        p("\n[bold cyan]Top files to redact[/bold cyan]\n")
 
         def _resolve(fp: Path) -> tuple[str, str]:
             for t in targets:
@@ -1122,15 +1122,15 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # ── backup + log rotation ─────────────────────────────────────────────────
     from .backup import rotate_logs
     rotate_logs()
-    p("\n[bold]Backup[/bold]")
+    p("\n[bold cyan]Backup[/bold cyan]")
     for b in backup(targets, max_keep=max_backups):
         p(f"  [green]✓[/green]  {b.display:<22} [dim]{b.path}[/dim]")
 
     # ── phase 3: redact text ──────────────────────────────────────────────────
     # Only rewrite files containing high-precision tokens; loose-rule matches
     # ride along in the audit report but stay untouched.
-    p(f"\n[bold]Phase 3[/bold]  Redacting {len(redactable_secrets):,} secrets "
-      f"in {len(flagged_redactable):,} files  "
+    p(f"\n[bold cyan]Phase 3[/bold cyan]  [bold]Redacting {len(redactable_secrets):,} secrets "
+      f"in {len(flagged_redactable):,} files[/bold]  "
       f"[dim]({WORKERS} workers)[/dim]")
     t3 = time.perf_counter()
     worker_args = [(str(fp), redactable_secrets, False) for fp in flagged_redactable]
@@ -1177,7 +1177,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     p(f"  [dim]{time.perf_counter()-t3:.1f}s[/dim]")
 
     # ── phase 4: sqlite ───────────────────────────────────────────────────────
-    p("\n[bold]Phase 4[/bold]  SQLite databases")
+    p("\n[bold cyan]Phase 4[/bold cyan]  [bold]SQLite databases[/bold]")
     sqlite_total, sqlite_results = redact_sqlite(redactable_secrets, targets, dry_run=False)
     if not sqlite_results:
         p("  [dim]none found[/dim]")
