@@ -124,7 +124,7 @@ JSON lines are parsed and secrets are replaced inside string values only, preser
 
 ## Install
 
-**Requirements:** Python ≥ 3.11, pipx, rsync
+**Requirements:** Python ≥ 3.10, pipx, rsync
 
 ```bash
 pipx install agentscrub
