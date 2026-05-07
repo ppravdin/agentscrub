@@ -200,7 +200,7 @@ def install_detector(key: str) -> Path:
         out_path = BIN_DIR / spec.binary
         temp_out = tmp / spec.binary
         _extract_binary(spec, asset_path, temp_out)
-        os.replace(temp_out, out_path)
+        shutil.move(str(temp_out), str(out_path))
         out_path.chmod(out_path.stat().st_mode | stat.S_IXUSR)
         return out_path
 
