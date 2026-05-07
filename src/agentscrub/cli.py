@@ -19,11 +19,13 @@ try:
     )
     from rich.table import Table
     from rich.panel import Panel
+    from rich.markup import escape as _rich_escape
     from rich import box
     _CON = Console(highlight=False)
     RICH = True
 except ImportError:
     _CON = None
+    _rich_escape = str
     RICH = False
 
 _MARKUP = re.compile(r'\[/?[^\]]*\]')
@@ -36,6 +38,10 @@ def p(msg: object = "", **kw) -> None:
         _CON.print(msg, **kw)
     else:
         print(_MARKUP.sub("", str(msg)), flush=True)
+
+
+def _escape_markup(value: object) -> str:
+    return _rich_escape(str(value))
 
 
 def _bars(
@@ -1053,7 +1059,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 row = []
                 if show_source:
                     row.append(tool_name)
-                row.extend([_trunc_path(rel), str(uniq), kind, preview])
+                row.extend([
+                    _escape_markup(_trunc_path(rel)),
+                    str(uniq),
+                    _escape_markup(kind),
+                    _escape_markup(preview),
+                ])
                 tbl.add_row(*row)
             _CON.print(tbl)
         elif RICH:
@@ -1065,14 +1076,14 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 kind, preview, _h = _split_proof(proof)
                 path_w = _CON.width - 4
                 _CON.print(
-                    f"  [white]{_trunc_path(rel, path_w)}[/white]"
-                    + (f"  [dim]{tool_name}[/dim]" if show_source else ""),
+                    f"  [white]{_escape_markup(_trunc_path(rel, path_w))}[/white]"
+                    + (f"  [dim]{_escape_markup(tool_name)}[/dim]" if show_source else ""),
                     markup=True,
                 )
                 _CON.print(
                     f"    [bold yellow]{uniq:>3}[/bold yellow][dim] secrets [/dim]"
-                    f"[dim]·[/dim] [cyan]{kind}[/cyan] "
-                    f"[dim]·[/dim] [bold green]{preview}[/bold green]"
+                    f"[dim]·[/dim] [cyan]{_escape_markup(kind)}[/cyan] "
+                    f"[dim]·[/dim] [bold green]{_escape_markup(preview)}[/bold green]"
                 )
                 if i < len(exposed) - 1:
                     _CON.print()  # blank line between cards

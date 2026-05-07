@@ -12,11 +12,20 @@ class ScanTarget:
     display: str        # human label  e.g. "Claude Code"
     exclude_dirs: frozenset[str] = field(default_factory=frozenset)
     exclude_files: frozenset[str] = field(default_factory=frozenset)
+    exclude_suffixes: frozenset[str] = field(default_factory=frozenset)
 
-    def excluded(self, p: Path) -> bool:
+    def excluded_by_dir(self, p: Path) -> bool:
+        return any(part in self.exclude_dirs for part in p.parts)
+
+    def excluded_by_name(self, p: Path) -> bool:
         if p.name in self.exclude_files:
             return True
-        return any(part in self.exclude_dirs for part in p.parts)
+        if any(p.name.endswith(suffix) for suffix in self.exclude_suffixes):
+            return True
+        return False
+
+    def excluded(self, p: Path) -> bool:
+        return self.excluded_by_dir(p) or self.excluded_by_name(p)
 
 
 # Registry — add new tools here, no code changes needed elsewhere
@@ -30,18 +39,24 @@ _REGISTRY: list[dict] = [
         # telemetry/ holds Claude Code's local analytics queue (failed-event
         # buffers full of beta-flag identifiers, GUIDs, hyphenated build
         # strings) which detectors heavily false-positive on.
-        # All three are pattern-shape noise with no user history.
-        exclude_dirs={"cache", "marketplaces", "telemetry"},
+        # All of these are pattern-shape/cache noise with no user history.
+        exclude_dirs={
+            "backups", "cache", "image-cache", "marketplaces", "statsig", "telemetry",
+        },
         exclude_files={".credentials.json", "settings.json"},
     ),
     dict(
         tool="codex",
         display="OpenAI Codex CLI",
         dirs=["~/.codex"],
-        # cache/ holds downloaded codex_apps_tools data; models_cache.json is a
-        # fetched OpenAI model catalog. Both are pure pattern-shape collisions
-        # (slugs, IDs, etags) with no user history.
-        exclude_dirs={"cache"},
+        # cache/.tmp/tmp/plugins/skills hold downloaded tools, marketplaces,
+        # generated images, and installed helper code. Those are not Codex
+        # sessions; they are mostly public artifacts and pattern-shape noise.
+        # Keep sessions/, memories/, shell_snapshots/, history.jsonl, and
+        # SQLite state files in scope.
+        exclude_dirs={
+            ".git", ".tmp", "cache", "generated_images", "plugins", "skills", "tmp",
+        },
         exclude_files={"auth.json", ".credentials.json", "models_cache.json"},
     ),
     dict(
@@ -64,10 +79,14 @@ _REGISTRY: list[dict] = [
         # install tree (Stable-<sha>/server/out/...) — that's bundled
         # Microsoft VS Code JavaScript source, often 20k+ files of
         # minified JS that produce regex-shape collisions but contain
-        # zero user data.
+        # zero user data. data/User/History is VS Code local file history
+        # snapshots, not Cursor chat/session storage. Keep workspaceStorage in
+        # scope because Cursor chat databases live there.
         exclude_dirs={"bin", "extensions", "node_modules", "cli",
-                      "CachedProfilesData", "CachedExtensionVSIXs", "logs"},
-        exclude_files={"mcp.json"},
+                      "CachedProfilesData", "CachedExtensionVSIXs", "History",
+                      "Machine", "logs"},
+        exclude_files={"languagepacks.json", "machineid", "mcp.json", "settings.json"},
+        exclude_suffixes={".log", ".pid", ".token"},
     ),
     dict(
         tool="cursor-app",
@@ -243,6 +262,7 @@ def discover(extra: list[Path] | None = None) -> list[ScanTarget]:
                     display=spec["display"],
                     exclude_dirs=frozenset(spec.get("exclude_dirs", set())),
                     exclude_files=frozenset(spec.get("exclude_files", set())),
+                    exclude_suffixes=frozenset(spec.get("exclude_suffixes", set())),
                 ))
                 matched = True
             if matched:

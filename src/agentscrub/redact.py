@@ -158,7 +158,9 @@ def collect_files(targets: list[ScanTarget]) -> list[Path]:
         for p in target.path.rglob("*"):
             if not p.is_file() or p.suffix in BINARY_EXTS:
                 continue
-            if target.excluded(p) and not is_managed_credential_file(p):
+            if target.excluded_by_dir(p):
+                continue
+            if target.excluded_by_name(p) and not is_managed_credential_file(p):
                 continue
             try:
                 if p.stat().st_size > 10 * 1024 * 1024:
