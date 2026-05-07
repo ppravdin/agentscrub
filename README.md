@@ -8,7 +8,7 @@ agentscrub is an open-source, local-first CLI for finding and redacting leaked s
 
 AI tools like Claude Code, Codex CLI, Cursor, Gemini CLI, Windsurf, Cline, Continue, and others can store sensitive data locally: pasted API keys, `.env` contents, database URLs, JWTs, OAuth tokens, cloud credentials, MCP settings, and shell output. Malware, rogue extensions, compromised packages, or anyone with local machine access can scan those files for credentials. agentscrub scans locally, reports masked findings, and can safely redact leaked copies with backups and rollback.
 
-https://github.com/user-attachments/assets/60d0f65f-39e8-46a8-bb1f-cffb7744d362
+https://github.com/user-attachments/assets/d75d2680-8363-4a89-b0f1-e48490015220
 
 ## Quick start
 
