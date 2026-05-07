@@ -2,9 +2,13 @@
 
 ![agentscrub — scan code and logs, detect secrets, protect everywhere](assets/cover.png)
 
-Scrubs secrets and credentials from your AI coding assistant session logs.
+**Clean the secrets your AI coding agents leave behind.**
 
-AI tools like Claude Code, Codex CLI, and Cursor store your entire conversation history locally — including any API keys, database passwords, JWTs, and OAuth tokens you've pasted in or that appeared in code. Supply-chain attacks on VS Code extensions or npm packages routinely scan these files. agentscrub finds and removes them.
+agentscrub is an open-source, local-first CLI for finding and redacting leaked secrets in AI coding-agent histories, transcripts, tool-call logs, command traces, caches, and local state files.
+
+AI tools like Claude Code, Codex CLI, Cursor, Gemini CLI, Windsurf, Cline, Continue, and others can store sensitive data locally: pasted API keys, `.env` contents, database URLs, JWTs, OAuth tokens, cloud credentials, MCP settings, and shell output. Malware, rogue extensions, compromised packages, or anyone with local machine access can scan those files for credentials. agentscrub scans locally, reports masked findings, and can safely redact leaked copies with backups and rollback.
+
+https://github.com/ppravdin/agentscrub/releases/download/readme-media/agentscrub-github.mp4
 
 ## Quick start
 
