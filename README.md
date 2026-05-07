@@ -17,11 +17,8 @@ https://github.com/user-attachments/assets/9a770a0c-aaa1-42cd-aca8-5e7421c163ea
 # Install
 pipx install agentscrub
 
-# Install the three detectors (gitleaks, TruffleHog, Titus). See "Detection tools"
-# below for macOS / Windows / arm64 builds.
-agentscrub doctor      # tells you what's missing
-
-# Read-only audit — writes nothing; produces two masked reports
+# Read-only audit — writes nothing
+# If scanners are missing, agentscrub offers to install them automatically.
 agentscrub scan
 
 # Redact in place — asks for confirmation, takes a backup first
@@ -135,32 +132,26 @@ pipx install agentscrub
 
 ### Detection tools
 
-The commands below install the **Linux x86_64** builds. For macOS, Windows, or arm64, grab the matching binary from each project's release page and drop it into `~/.local/bin/` (or any directory on your `PATH`):
+agentscrub uses three detector binaries: gitleaks, TruffleHog, and Titus.
 
-- gitleaks releases: <https://github.com/gitleaks/gitleaks/releases>
-- TruffleHog releases: <https://github.com/trufflesecurity/trufflehog/releases>
-- Titus releases: <https://github.com/praetorian-inc/titus/releases>
+You do **not** install them by hand. On first `agentscrub scan` or
+`agentscrub run`, missing detectors are offered automatically:
 
-```bash
-# gitleaks
-curl -sL https://github.com/gitleaks/gitleaks/releases/download/v8.26.0/gitleaks_8.26.0_linux_x64.tar.gz \
-  | tar xz -C ~/.local/bin/ gitleaks && chmod +x ~/.local/bin/gitleaks
-
-# TruffleHog
-curl -sL https://github.com/trufflesecurity/trufflehog/releases/download/v3.95.2/trufflehog_3.95.2_linux_amd64.tar.gz \
-  | tar xz -C ~/.local/bin/ trufflehog && chmod +x ~/.local/bin/trufflehog
-
-# Titus
-curl -sLo ~/.local/bin/titus \
-  https://github.com/praetorian-inc/titus/releases/download/v1.1.29/titus-linux-amd64 \
-  && chmod +x ~/.local/bin/titus
+```text
+2 detector(s) missing: TruffleHog, Titus
+Install official release binaries to ~/.agentscrub/bin?
+Continue? [Y/n]
 ```
 
-Verify everything is in place:
+Downloaded binaries are SHA256-verified against each tool's official release
+checksums and stored in:
 
-```bash
-agentscrub doctor
+```text
+~/.agentscrub/bin/
 ```
+
+If a detector is missing, `agentscrub scan` and `agentscrub run` show the
+installer prompt before scanning.
 
 ## Usage
 

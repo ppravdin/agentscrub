@@ -10,10 +10,19 @@ import tempfile
 from pathlib import Path
 
 from .discover import ScanTarget
+from .installers import BIN_DIR, detector_path, detector_specs
 
-GITLEAKS   = Path.home() / ".local/bin/gitleaks"
-TRUFFLEHOG = Path.home() / ".local/bin/trufflehog"
-TITUS      = Path.home() / ".local/bin/titus"
+_SPECS = detector_specs()
+
+
+def _tool_path(key: str) -> Path:
+    spec = _SPECS[key]
+    return detector_path(spec.binary) or (BIN_DIR / spec.binary)
+
+
+GITLEAKS   = _tool_path("gitleaks")
+TRUFFLEHOG = _tool_path("trufflehog")
+TITUS      = _tool_path("titus")
 
 _LOW_SIGNAL_TYPES = frozenset({
     "Coveralls Repo Identifier",

@@ -472,7 +472,47 @@ def cmd_doctor() -> None:
     if all_ok:
         p("[bold green]All tools installed.[/bold green]\n")
     else:
-        p("[yellow]Missing tools.[/yellow]  See README for install commands.\n")
+        p("[yellow]Missing tools.[/yellow]  Run [bold]agentscrub scan[/bold] and agentscrub will offer to install them.\n")
+
+
+def _install_missing_detectors(missing: list[str], *, assume_yes: bool = False) -> None:
+    if not missing:
+        return
+
+    from .installers import BIN_DIR, install_detectors
+
+    keys = {
+        "gitleaks": "gitleaks",
+        "TruffleHog": "trufflehog",
+        "Titus": "titus",
+    }
+    install_keys = [keys[name] for name in missing if name in keys]
+    if not install_keys:
+        return
+
+    p(f"\n[yellow]{len(install_keys)} detector(s) missing: {', '.join(missing)}[/yellow]")
+    p(f"[dim]Install official release binaries to {BIN_DIR}?[/dim]")
+
+    if not assume_yes:
+        if not sys.stdin.isatty():
+            p("[red]Cannot ask for confirmation in a non-interactive shell.[/red]\n")
+            return
+        try:
+            ans = input("Continue? [Y/n] ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans not in ("", "y", "yes"):
+            p("[dim]Skipped detector install. Coverage will be reduced.[/dim]\n")
+            return
+
+    p()
+    for key, path, err in install_detectors(install_keys):
+        label = {"gitleaks": "gitleaks", "trufflehog": "TruffleHog", "titus": "Titus"}[key]
+        if err:
+            p(f"  [bold red]✗[/bold red]  {label:<14} [red]{err}[/red]")
+        else:
+            p(f"  [bold green]✓[/bold green]  {label:<14} [dim]{path}[/dim]")
+    p()
 
 
 # ── schedule ──────────────────────────────────────────────────────────────────
@@ -610,15 +650,18 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     _status   = tools_status()
     available = [name for name, _, ok in _status if ok]
     missing   = [name for name, _, ok in _status if not ok]
+    if missing:
+        _install_missing_detectors(missing, assume_yes=bool(getattr(ns, "yes", False)))
+        _status   = tools_status()
+        available = [name for name, _, ok in _status if ok]
+        missing   = [name for name, _, ok in _status if not ok]
     if not available:
         p("\n[bold red]No detection tools installed.[/bold red]")
         p("[dim]agentscrub needs at least one of gitleaks, TruffleHog, or Titus.[/dim]")
-        p("[dim]Run [bold]agentscrub doctor[/bold] for install commands.[/dim]\n")
         return
     if missing:
         p(f"\n[yellow]Only {len(available)}/3 detectors installed "
           f"(missing: {', '.join(missing)}). Coverage will be reduced.[/yellow]")
-        p("[dim]Run [bold]agentscrub doctor[/bold] for install commands.[/dim]")
 
     # ── header ────────────────────────────────────────────────────────────────
     mode = ("[bold yellow] SCAN READ-ONLY [/bold yellow]" if dry_run
