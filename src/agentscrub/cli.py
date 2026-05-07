@@ -888,15 +888,35 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             flagged_redactable_count=len(flagged_redactable),
         )
 
-        # Per-target breakdown: redactable files only (the actionable count).
+        # Per-target breakdown: redactable files, distinct secrets, and total
+        # occurrences. These are the same nouns as the headline.
         redact_per_target = {t: 0 for t in targets}
+        secrets_per_target: dict[object, set[str]] = {t: set() for t in targets}
+        times_per_target = {t: 0 for t in targets}
+        actionable_redactable_secrets: set[str] = set()
         for fp in flagged_redactable:
             for t in targets:
-                try: fp.relative_to(t.path); redact_per_target[t] += 1; break
+                try:
+                    fp.relative_to(t.path)
+                    redact_per_target[t] += 1
+                    owner = t
+                    break
                 except ValueError: pass
+            else:
+                continue
+            for f in findings_by_file.get(fp, []):
+                if not is_high_precision_label(f["type"]):
+                    continue
+                secret_hash = str(f.get("secret_hash") or f.get("proof") or "")
+                if secret_hash:
+                    secrets_per_target[owner].add(secret_hash)
+                secret = f.get("_secret")
+                if isinstance(secret, str):
+                    actionable_redactable_secrets.add(secret)
+                times_per_target[owner] += int(f.get("hits", 0) or 0)
 
         # Per-type hits (= occurrences). Sum of the bar values equals the
-        # 'hits' number in the headline, so the chart and the headline are in
+        # 'times' number in the headline, so the chart and the headline are in
         # the same unit and add up.
         hits_per_type: dict[str, int] = {}
         for fp in flagged_redactable:
@@ -914,16 +934,20 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             _CON.print()
             tbl = Table(box=None, show_header=True, padding=(0, 2),
                         header_style="bold cyan")
-            tbl.add_column("Tool",     style="dim", min_width=20)
-            tbl.add_column("Exposed",  justify="right", style="bold yellow")
-            tbl.add_column("Scanned",  justify="right", style="dim")
+            tbl.add_column("Tool",    style="dim", min_width=20)
+            tbl.add_column("Files",   justify="right", style="bold yellow")
+            tbl.add_column("Secrets", justify="right", style="bold cyan")
+            tbl.add_column("Times",   justify="right", style="bold green")
             for t in targets:
-                r = redact_per_target[t]
-                tot = files_per_target[t]
-                tbl.add_row(t.display, f"{r:,}", f"{tot:,}")
+                tbl.add_row(
+                    t.display,
+                    f"{redact_per_target[t]:,}",
+                    f"{len(secrets_per_target[t]):,}",
+                    f"{times_per_target[t]:,}",
+                )
             _CON.print(tbl)
             _CON.print(
-                f"  [bold]{len(redactable_secrets):,}[/bold] secrets "
+                f"  [bold]{len(actionable_redactable_secrets):,}[/bold] secrets "
                 f"[dim]in[/dim] "
                 f"[bold]{len(flagged_redactable):,}[/bold] files "
                 f"[dim]·[/dim] "
@@ -934,16 +958,22 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 _CON.print()
                 _bars(type_counts_redactable,
                       total=total_hits_redactable,
-                      count_label="Hits")
+                      count_label="Times")
         else:
             for t in targets:
-                r = redact_per_target[t]
-                tot = files_per_target[t]
-                print(f"  {t.display:<22}  redact {r:,} / {tot:,} scanned"
-                      f" ({r/tot*100:.1f}%)" if tot else
-                      f"  {t.display:<22}  0", flush=True)
-            print(f"  {len(flagged_redactable):,} files to redact",
-                  flush=True)
+                print(
+                    f"  {t.display:<22}  "
+                    f"{redact_per_target[t]:>6,} files  "
+                    f"{len(secrets_per_target[t]):>6,} secrets  "
+                    f"{times_per_target[t]:>6,} times",
+                    flush=True,
+                )
+            print(
+                f"  {len(actionable_redactable_secrets):,} secrets in "
+                f"{len(flagged_redactable):,} files · "
+                f"{total_hits_redactable:,} times",
+                flush=True,
+            )
 
         p(f"\n[bold cyan]Full audit[/bold cyan]  [dim]{full_report_path}[/dim]")
     else:
@@ -951,6 +981,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         # so the rest of the function compiles without unbound names.
         redactable_secrets, report_only_secrets = set(), set()
         flagged_redactable, flagged_lowconf_only = [], []
+        actionable_redactable_secrets = set()
 
     if not flagged:
         if preserved:
@@ -1103,7 +1134,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             g.add_column()
             g.add_column()
             g.add_row("  agentscrub run",
-                      f"redact {len(redactable_secrets):,} secrets in {len(flagged_redactable):,} files after confirmation")
+                      f"redact {len(actionable_redactable_secrets):,} secrets in {len(flagged_redactable):,} files after confirmation")
             g.add_row("",
                       f"[dim]backup created first, last {max_backups} kept[/dim]")
             g.add_row("  agentscrub run --yes",
@@ -1111,7 +1142,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             _CON.print(g)
         else:
             print(f"\nNext steps:", flush=True)
-            print(f"  agentscrub run        redact {len(redactable_secrets):,} secrets in {len(flagged_redactable):,} files after confirmation", flush=True)
+            print(f"  agentscrub run        redact {len(actionable_redactable_secrets):,} secrets in {len(flagged_redactable):,} files after confirmation", flush=True)
             print(f"                        backup created first, last {max_backups} kept", flush=True)
             print( "  agentscrub run --yes  redact without confirmation", flush=True)
         p()
@@ -1130,7 +1161,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
     # ── confirm ───────────────────────────────────────────────────────────────
     if not skip_confirm:
-        p(f"\n[bold yellow]About to redact {len(redactable_secrets):,} secrets "
+        p(f"\n[bold yellow]About to redact {len(actionable_redactable_secrets):,} secrets "
           f"across {len(flagged_redactable):,} files.[/bold yellow]")
         p("[dim]A rotating backup will be created first "
           f"(keeping last {max_backups}).[/dim]")
@@ -1153,11 +1184,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # ── phase 3: redact text ──────────────────────────────────────────────────
     # Only rewrite files containing high-precision tokens; loose-rule matches
     # ride along in the audit report but stay untouched.
-    p(f"\n[bold cyan]Phase 3[/bold cyan]  [bold]Redacting {len(redactable_secrets):,} secrets "
+    p(f"\n[bold cyan]Phase 3[/bold cyan]  [bold]Redacting {len(actionable_redactable_secrets):,} secrets "
       f"in {len(flagged_redactable):,} files[/bold]  "
       f"[dim]({WORKERS} workers)[/dim]")
     t3 = time.perf_counter()
-    worker_args = [(str(fp), redactable_secrets, False) for fp in flagged_redactable]
+    worker_args = [(str(fp), actionable_redactable_secrets, False) for fp in flagged_redactable]
     total_redactions = 0
     errors: list[str] = []
 

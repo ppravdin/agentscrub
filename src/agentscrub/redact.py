@@ -390,6 +390,8 @@ def file_findings(
         findings.append({
             "type": label,
             "proof": _proof(secret, type_map.get(secret, "unknown")),
+            "_secret": secret,
+            "secret_hash": hashlib.sha256(secret.encode()).hexdigest(),
             "hits": text.count(secret),
         })
     return findings
@@ -450,6 +452,8 @@ def _file_findings_grep(
         findings.append({
             "type": label,
             "proof": _proof(secret, type_map.get(secret, "unknown")),
+            "_secret": secret,
+            "secret_hash": hashlib.sha256(secret.encode()).hexdigest(),
             "hits": counts[secret],
         })
     return findings
