@@ -490,7 +490,7 @@ def _install_missing_detectors(missing: list[str], *, assume_yes: bool = False) 
     if not install_keys:
         return
 
-    p(f"\n[yellow]{len(install_keys)} detector(s) missing: {', '.join(missing)}[/yellow]")
+    p(f"\n[bold cyan]Installing detectors[/bold cyan]  [dim]{', '.join(missing)}[/dim]")
     p(f"[dim]Install official release binaries to {BIN_DIR}?[/dim]")
 
     if not assume_yes:
@@ -506,12 +506,18 @@ def _install_missing_detectors(missing: list[str], *, assume_yes: bool = False) 
             return
 
     p()
+    failures = 0
     for key, path, err in install_detectors(install_keys):
         label = {"gitleaks": "gitleaks", "trufflehog": "TruffleHog", "titus": "Titus"}[key]
         if err:
+            failures += 1
             p(f"  [bold red]✗[/bold red]  {label:<14} [red]{err}[/red]")
         else:
             p(f"  [bold green]✓[/bold green]  {label:<14} [dim]{path}[/dim]")
+    if failures:
+        p(f"\n[yellow]{len(install_keys) - failures}/{len(install_keys)} detector(s) installed. Coverage will be reduced.[/yellow]")
+    else:
+        p("\n[bold green]Detectors installed.[/bold green]")
     p()
 
 
