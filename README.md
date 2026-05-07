@@ -97,12 +97,13 @@ matched patterns are reported, so you can review them by hand if needed.
 The goal is to remove leaked copies from logs, histories, and caches without
 breaking agent logins or MCP connections.
 
-Each scan or run writes two masked reports to `~/.agentscrub/logs/`:
+Each scan or run writes one masked full audit to `~/.agentscrub/logs/`:
 
-- `scan-...-summary.txt` — human-readable result, top affected tools, preserved
-  auth/MCP files, and the highest-priority files to inspect.
 - `scan-...-full.txt` — complete file-by-file audit with detected pattern type,
   hit count, and proof hash for every affected file.
+
+Old reports are rotated automatically: agentscrub keeps the newest 30 scan
+audits and newest 30 cron stdout logs, and removes legacy summary reports.
 
 Raw credentials are never printed in reports. Proof hashes let you recognize the
 same secret across files without exposing the secret itself.

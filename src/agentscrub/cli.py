@@ -331,6 +331,9 @@ def _write_scan_report(
         _write_preserved(fh)
         _write_group(fh, "Full redactable file audit", ordered_flagged)
 
+    from .backup import rotate_logs
+    rotate_logs()
+
     return full_path
 
 
@@ -908,12 +911,10 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             tbl.add_column("Tool",     style="dim", min_width=20)
             tbl.add_column("Exposed",  justify="right", style="bold yellow")
             tbl.add_column("Scanned",  justify="right", style="dim")
-            tbl.add_column("Pct",      justify="right", style="dim")
             for t in targets:
                 r = redact_per_target[t]
                 tot = files_per_target[t]
-                tbl.add_row(t.display, f"{r:,}", f"{tot:,}",
-                            f"{r/tot*100:.1f}%" if tot else "")
+                tbl.add_row(t.display, f"{r:,}", f"{tot:,}")
             _CON.print(tbl)
             _CON.print(
                 f"  [bold]{len(redactable_secrets):,}[/bold] secrets "

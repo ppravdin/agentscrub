@@ -124,11 +124,34 @@ def list_backups(targets: list[ScanTarget]) -> list[Backup]:
 
 
 def rotate_logs(max_keep: int = 30) -> None:
-    """Keep only the newest max_keep daily log files."""
+    """Keep logs bounded so scheduled scans do not grow ~/.agentscrub forever.
+
+    Current scan reports are named scan-<timestamp>-full.txt. Older agentscrub
+    versions also wrote scan-<timestamp>-summary.txt and scan-<timestamp>.txt.
+    Summaries are redundant now that only the full audit is linked, so prune
+    them aggressively. Keep the newest max_keep full/legacy scan reports and
+    newest max_keep cron stdout logs.
+    """
     if not LOG_DIR.exists():
         return
-    logs = sorted(LOG_DIR.glob("*.log"))  # oldest first by name (YYYYMMDD)
-    for old in logs[:-max_keep] if len(logs) > max_keep else []:
+
+    for stale in LOG_DIR.glob("scan-*-summary.txt"):
+        stale.unlink(missing_ok=True)
+
+    reports = [
+        p for p in LOG_DIR.glob("scan-*.txt")
+        if not p.name.endswith("-summary.txt")
+    ]
+    reports.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    for old in reports[max_keep:]:
+        old.unlink(missing_ok=True)
+
+    logs = sorted(
+        LOG_DIR.glob("*.log"),
+        key=lambda p: (p.stat().st_mtime, p.name),
+        reverse=True,
+    )
+    for old in logs[max_keep:]:
         old.unlink(missing_ok=True)
 
 
