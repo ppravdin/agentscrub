@@ -317,6 +317,7 @@ def _write_scan_report(
         if pattern_counts:
             fh.write("\nTop credential-like pattern types\n")
             fh.write("=================================\n")
+            fh.write("Type labels are detector guesses; the secret may be real even when the service label is wrong.\n\n")
             fh.write(f"{'Type':<32} {'Files':>8} {'Hits':>10}\n")
             fh.write(f"{'-' * 32} {'-' * 8:>8} {'-' * 10:>10}\n")
             for label, files_n, hits_n in pattern_counts[:20]:
@@ -959,6 +960,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 _bars(type_counts_redactable,
                       total=total_hits_redactable,
                       count_label="Times")
+                _CON.print(
+                    "  [dim]* Type labels are guesses; service names can be wrong.[/dim]"
+                )
         else:
             for t in targets:
                 print(
@@ -974,6 +978,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 f"{total_hits_redactable:,} times",
                 flush=True,
             )
+            if type_counts_redactable:
+                print(
+                    "  * Type labels are guesses; service names can be wrong.",
+                    flush=True,
+                )
 
         p(f"\n[bold cyan]Full audit[/bold cyan]  [dim]{full_report_path}[/dim]")
     else:
