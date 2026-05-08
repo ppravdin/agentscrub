@@ -284,7 +284,7 @@ def _write_scan_report(
         fh.write("- Proof hashes let you recognize the same secret across files without exposing it.\n")
         if preserved:
             fh.write("- Live auth/MCP credential stores are listed below but skipped by default.\n")
-        fh.write("- A backup is created before redaction; the last 3 backups are kept.\n")
+        fh.write("- An encrypted backup is created before redaction; the last 3 backups are kept.\n")
 
     def _write_by_tool(fh) -> None:
         if not source_file_counts:
@@ -1221,7 +1221,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     if not skip_confirm:
         p(f"\n[bold yellow]About to redact {len(actionable_redactable_secrets):,} secrets "
           f"across {len(flagged_redactable):,} files.[/bold yellow]")
-        p("[dim]A rotating backup will be created first "
+        p("[dim]An encrypted rotating backup will be created first "
           f"(keeping last {max_backups}).[/dim]")
         try:
             ans = input("Continue? [y/N] ").strip().lower()
@@ -1237,7 +1237,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     rotate_logs()
     p("\n[bold cyan]Backup[/bold cyan]")
     for b in backup(targets, max_keep=max_backups):
-        p(f"  [green]✓[/green]  {b.display:<22} [dim]{b.path}[/dim]")
+        p(f"  [green]✓[/green]  {b.display:<22} [dim]encrypted · {b.path}[/dim]")
 
     # ── phase 3: redact text ──────────────────────────────────────────────────
     # Only rewrite files containing high-precision tokens; loose-rule matches

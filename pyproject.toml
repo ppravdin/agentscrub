@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentscrub"
-version = "1.1.9"
+version = "1.1.10"
 description = "Scrub secrets and credentials from AI coding assistant session logs"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -23,6 +23,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
+    "cryptography>=42.0",
     "rich>=13.0",
 ]
 

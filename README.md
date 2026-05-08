@@ -187,20 +187,24 @@ agentscrub run --max-backups 10
 
 ## Backup & rollback
 
-Every live run creates a backup before touching anything:
+Every live run creates an encrypted backup before touching anything. The
+encryption key is generated once at `~/.agentscrub/key` and stored with `0600`
+permissions so scheduled runs work without prompts.
 
 ```
 ~/.agentscrub/backups/
   claude/
-    20260429-030000/    ← newest
-    20260428-030000/
-    20260427-030000/
+    20260429-030000.tar.gz.enc    ← newest
+    20260428-030000.tar.gz.enc
+    20260427-030000.tar.gz.enc
   codex/
-    20260429-030000/
+    20260429-030000.tar.gz.enc
     ...
 ```
 
-Oldest backups are rotated out automatically (default: keep 3 per tool).
+Oldest backups are rotated out automatically (default: keep 3 per tool). Old
+plaintext backup folders from earlier versions are encrypted automatically the
+next time agentscrub creates or lists backups.
 
 To restore:
 

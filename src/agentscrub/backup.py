@@ -1,16 +1,26 @@
 """Backup rotation and rollback."""
 from __future__ import annotations
+import hmac
+import os
 import shutil
 import subprocess
+import tarfile
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
 from .discover import ScanTarget
 
 BACKUP_ROOT = Path.home() / ".agentscrub" / "backups"
+KEY_PATH    = Path.home() / ".agentscrub" / "key"
 LOG_DIR     = Path.home() / ".agentscrub" / "logs"
 _FMT = "%Y%m%d-%H%M%S"
+_ENC_SUFFIX = ".tar.gz.enc"
+_MAGIC = b"agentscrub-backup-v1\n"
+_CHUNK = 1024 * 1024
 
 _RSYNC_PROTECTED = (
     ".credentials.json",
@@ -38,6 +48,7 @@ class Backup:
     tool: str
     display: str
     created: datetime
+    encrypted: bool = True
 
     @property
     def age_str(self) -> str:
@@ -55,42 +66,224 @@ class Backup:
         return r.stdout.split()[0] if r.returncode == 0 else "?"
 
 
+def _load_or_create_key() -> bytes:
+    KEY_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if KEY_PATH.exists():
+        key = KEY_PATH.read_bytes()
+        if len(key) != 32:
+            raise RuntimeError(f"invalid agentscrub backup key: {KEY_PATH}")
+        try:
+            os.chmod(KEY_PATH, 0o600)
+        except OSError:
+            pass
+        return key
+
+    key = os.urandom(32)
+    fd = os.open(KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(key)
+    return key
+
+
+def _cipher_keys(key: bytes) -> tuple[bytes, bytes]:
+    enc_key = hmac.digest(key, b"agentscrub backup encryption", "sha256")
+    mac_key = hmac.digest(key, b"agentscrub backup authentication", "sha256")
+    return enc_key, mac_key
+
+
+def _encrypt_file(src: Path, dst: Path) -> None:
+    key = _load_or_create_key()
+    enc_key, mac_key = _cipher_keys(key)
+    nonce = os.urandom(16)
+    cipher = Cipher(algorithms.AES(enc_key), modes.CTR(nonce)).encryptor()
+    mac = hmac.new(mac_key, digestmod="sha256")
+    dst_tmp = dst.with_suffix(dst.suffix + ".tmp")
+    try:
+        with src.open("rb") as inp, dst_tmp.open("wb") as out:
+            header = _MAGIC + nonce
+            out.write(header)
+            mac.update(header)
+            while True:
+                chunk = inp.read(_CHUNK)
+                if not chunk:
+                    break
+                encrypted = cipher.update(chunk)
+                out.write(encrypted)
+                mac.update(encrypted)
+            tail = cipher.finalize()
+            if tail:
+                out.write(tail)
+                mac.update(tail)
+            out.write(mac.digest())
+        os.chmod(dst_tmp, 0o600)
+        shutil.move(str(dst_tmp), str(dst))
+    finally:
+        dst_tmp.unlink(missing_ok=True)
+
+
+def _decrypt_file(src: Path, dst: Path) -> None:
+    key = _load_or_create_key()
+    enc_key, mac_key = _cipher_keys(key)
+    size = src.stat().st_size
+    min_size = len(_MAGIC) + 16 + 32
+    if size < min_size:
+        raise RuntimeError("encrypted backup is truncated")
+
+    mac = hmac.new(mac_key, digestmod="sha256")
+    with src.open("rb") as inp:
+        body_len = size - 32
+        remaining = body_len
+        while remaining:
+            chunk = inp.read(min(_CHUNK, remaining))
+            if not chunk:
+                raise RuntimeError("encrypted backup is truncated")
+            mac.update(chunk)
+            remaining -= len(chunk)
+        expected = inp.read(32)
+    if not hmac.compare_digest(mac.digest(), expected):
+        raise RuntimeError("encrypted backup authentication failed")
+
+    with src.open("rb") as inp, dst.open("wb") as out:
+        header = inp.read(len(_MAGIC) + 16)
+        if not header.startswith(_MAGIC):
+            raise RuntimeError("not an agentscrub encrypted backup")
+        nonce = header[len(_MAGIC):]
+        cipher = Cipher(algorithms.AES(enc_key), modes.CTR(nonce)).decryptor()
+        remaining = size - len(header) - 32
+        while remaining:
+            chunk = inp.read(min(_CHUNK, remaining))
+            if not chunk:
+                raise RuntimeError("encrypted backup is truncated")
+            out.write(cipher.update(chunk))
+            remaining -= len(chunk)
+        out.write(cipher.finalize())
+
+
+def _tar_dir_contents(source: Path, tar_path: Path) -> None:
+    with tarfile.open(tar_path, "w:gz") as tf:
+        for child in sorted(source.iterdir(), key=lambda p: p.name):
+            tf.add(child, arcname=child.name)
+
+
+def _extract_tar(tar_path: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tar_path, "r:gz") as tf:
+        tf.extractall(dest)
+
+
+def _encrypted_path(tool_dir: Path, ts: str) -> Path:
+    return tool_dir / f"{ts}{_ENC_SUFFIX}"
+
+
+def _parse_backup_entry(path: Path) -> tuple[datetime, bool] | None:
+    if path.is_dir():
+        name = path.name
+        encrypted = False
+    elif path.is_file() and path.name.endswith(_ENC_SUFFIX):
+        name = path.name[:-len(_ENC_SUFFIX)]
+        encrypted = True
+    else:
+        return None
+    try:
+        created = datetime.strptime(name, _FMT)
+    except ValueError:
+        return None
+    return created, encrypted
+
+
+def _remove_backup_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _encrypt_plaintext_backup(path: Path) -> Path:
+    archive = _encrypted_path(path.parent, path.name)
+    if archive.exists():
+        shutil.rmtree(path, ignore_errors=True)
+        return archive
+
+    with tempfile.TemporaryDirectory(prefix="agentscrub_backup_") as td:
+        tar_path = Path(td) / "backup.tar.gz"
+        _tar_dir_contents(path, tar_path)
+        _encrypt_file(tar_path, archive)
+    shutil.rmtree(path, ignore_errors=True)
+    return archive
+
+
+def migrate_plaintext_backups(targets: list[ScanTarget]) -> int:
+    """Encrypt old plaintext backup directories in-place. Returns count migrated."""
+    if not BACKUP_ROOT.exists():
+        return 0
+    tool_names = {t.tool for t in targets}
+    migrated = 0
+    for tool_dir in sorted(BACKUP_ROOT.iterdir()):
+        if not tool_dir.is_dir() or tool_dir.name not in tool_names:
+            continue
+        for entry in sorted(tool_dir.iterdir()):
+            parsed = _parse_backup_entry(entry)
+            if parsed is None:
+                continue
+            _created, encrypted = parsed
+            if not encrypted and entry.is_dir():
+                _encrypt_plaintext_backup(entry)
+                migrated += 1
+    return migrated
+
+
+def _backup_entries(tool_dir: Path) -> list[tuple[datetime, Path, bool]]:
+    entries: list[tuple[datetime, Path, bool]] = []
+    if not tool_dir.exists():
+        return entries
+    for entry in tool_dir.iterdir():
+        parsed = _parse_backup_entry(entry)
+        if parsed is None:
+            continue
+        created, encrypted = parsed
+        entries.append((created, entry, encrypted))
+    return sorted(entries, key=lambda x: x[0])
+
+
 def backup(targets: list[ScanTarget], max_keep: int = 3) -> list[Backup]:
     """
-    rsync each target into BACKUP_ROOT/<tool>/<timestamp>/.
+    Archive and encrypt each target into BACKUP_ROOT/<tool>/<timestamp>.tar.gz.enc.
     Rotates: keeps only the newest max_keep per tool.
     Returns the newly-created Backup objects.
     """
     BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
+    os.chmod(BACKUP_ROOT.parent, 0o700)
+    migrate_plaintext_backups(targets)
     ts = datetime.now().strftime(_FMT)
     created: list[Backup] = []
 
     for target in targets:
         tool_dir = BACKUP_ROOT / target.tool
         tool_dir.mkdir(parents=True, exist_ok=True)
-        dest = tool_dir / ts
-        dest.mkdir(parents=True, exist_ok=True)
+        archive = _encrypted_path(tool_dir, ts)
 
-        r = subprocess.run(
-            ["rsync", "-a", str(target.path) + "/", str(dest) + "/"],
-            capture_output=True, text=True,
-        )
-        if r.returncode != 0:
-            print(f"  [WARN] backup failed for {target.path}: {r.stderr[:200]}", flush=True)
+        try:
+            with tempfile.TemporaryDirectory(prefix="agentscrub_backup_") as td:
+                tar_path = Path(td) / "backup.tar.gz"
+                _tar_dir_contents(target.path, tar_path)
+                _encrypt_file(tar_path, archive)
+        except Exception as e:
+            print(f"  [WARN] backup failed for {target.path}: {str(e)[:200]}", flush=True)
             continue
 
         created.append(Backup(
-            path=dest,
+            path=archive,
             source=target.path,
             tool=target.tool,
             display=target.display,
             created=datetime.now(),
+            encrypted=True,
         ))
 
         # Rotate: delete oldest beyond max_keep
-        all_bups = sorted(tool_dir.iterdir())  # oldest first
-        for old in all_bups[:-max_keep] if len(all_bups) > max_keep else []:
-            shutil.rmtree(old, ignore_errors=True)
+        all_bups = _backup_entries(tool_dir)
+        for _created, old, _encrypted in all_bups[:-max_keep] if len(all_bups) > max_keep else []:
+            _remove_backup_path(old)
 
     return created
 
@@ -99,6 +292,7 @@ def list_backups(targets: list[ScanTarget]) -> list[Backup]:
     """All backups for the given targets, newest first."""
     if not BACKUP_ROOT.exists():
         return []
+    migrate_plaintext_backups(targets)
     tool_map = {t.tool: t for t in targets}
     result: list[Backup] = []
 
@@ -107,17 +301,14 @@ def list_backups(targets: list[ScanTarget]) -> list[Backup]:
         target = tool_map.get(tool)
         if target is None:
             continue
-        for ts_dir in sorted(tool_dir.iterdir(), reverse=True):
-            try:
-                created = datetime.strptime(ts_dir.name, _FMT)
-            except ValueError:
-                continue
+        for created, path, encrypted in sorted(_backup_entries(tool_dir), reverse=True):
             result.append(Backup(
-                path=ts_dir,
+                path=path,
                 source=target.path,
                 tool=tool,
                 display=target.display,
                 created=created,
+                encrypted=encrypted,
             ))
 
     return result
@@ -170,11 +361,24 @@ def rollback(b: Backup) -> tuple[bool, str]:
     diagnostics instead of just 'complete / failed'.
     """
     target = ScanTarget(path=b.source, tool=b.tool, display=b.display)
-    r = subprocess.run(
-        ["rsync", "-a", "--checksum", "--delete",
-         *_protected_excludes(target),
-         str(b.path) + "/", str(b.source) + "/"],
-        capture_output=True, text=True,
-    )
-    msg = r.stderr.strip()
-    return r.returncode == 0, msg
+    with tempfile.TemporaryDirectory(prefix="agentscrub_restore_") as td:
+        restore_root = Path(td) / "restore"
+        try:
+            if b.encrypted:
+                tar_path = Path(td) / "backup.tar.gz"
+                _decrypt_file(b.path, tar_path)
+                _extract_tar(tar_path, restore_root)
+                src = restore_root
+            else:
+                src = b.path
+        except Exception as e:
+            return False, str(e)
+
+        r = subprocess.run(
+            ["rsync", "-a", "--checksum", "--delete",
+             *_protected_excludes(target),
+             str(src) + "/", str(b.source) + "/"],
+            capture_output=True, text=True,
+        )
+        msg = r.stderr.strip()
+        return r.returncode == 0, msg
