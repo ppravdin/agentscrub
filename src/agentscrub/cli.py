@@ -1248,6 +1248,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     t3 = time.perf_counter()
     worker_args = [(str(fp), actionable_redactable_secrets, False) for fp in flagged_redactable]
     total_redactions = 0
+    total_redacted_files = 0
     errors: list[str] = []
 
     def _label(s: str) -> str:
@@ -1274,6 +1275,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                             f"  [red]WARN[/red]  {_label(path_str)}: {err}")
                     elif count:
                         total_redactions += count
+                        total_redacted_files += 1
                         prog.console.print(
                             f"  [bold green] OK [/bold green]  "
                             f"{_label(path_str)}  [dim]→[/dim]  {count:,}")
@@ -1285,9 +1287,23 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                     print(f"  WARN  {_label(path_str)}: {err}", flush=True)
                 elif count:
                     total_redactions += count
+                    total_redacted_files += 1
                     print(f"   OK   {_label(path_str)} → {count}", flush=True)
 
     p(f"  [dim]{time.perf_counter()-t3:.1f}s[/dim]")
+
+    # Verify the files we just rewrote. This catches both redaction misses and
+    # live agent processes that append/restore old in-memory transcript content
+    # while agentscrub is running.
+    still_exposed = grep_filter(actionable_redactable_secrets, flagged_redactable)
+    if still_exposed:
+        p(
+            f"  [red]WARN[/red]  {len(still_exposed):,} redacted file(s) still contain "
+            "detected secrets after cleanup"
+        )
+        p("        [dim]Close running agent tools and run agentscrub again.[/dim]")
+        for fp in still_exposed[:5]:
+            p(f"        [dim]{_label(str(fp))}[/dim]")
 
     # ── phase 4: database history (SQLite/vscdb files) ───────────────────────
     # Phase 4 cleans embedded session/log databases (e.g. ~/.codex/logs_2.sqlite,
@@ -1323,7 +1339,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         g.add_row(f"[bold green]✓ Done[/bold green]", f"[dim]in {elapsed:.0f}s[/dim]")
         g.add_row("", "")
         g.add_row(f"[bold green]{total_redactions:,}[/bold green]",
-                  f"secrets removed from [bold]{len(flagged):,}[/bold] text files")
+                  f"secrets removed from [bold]{total_redacted_files:,}[/bold] text files")
         if sqlite_total:
             g.add_row(f"[bold green]{sqlite_total:,}[/bold green]",
                       "secrets removed from database history")
@@ -1332,16 +1348,21 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         if errors:
             g.add_row(f"[red]{len(errors)}[/red]",
                       "[red]files with errors (see above)[/red]")
+        if still_exposed:
+            g.add_row(f"[red]{len(still_exposed)}[/red]",
+                      "[red]files still contain secrets after cleanup[/red]")
         _CON.print(Panel(g, box=box.ROUNDED, padding=(0, 2),
                           border_style="green", expand=False, title="[bold green]Scrub complete[/bold green]"))
     else:
         print(f"\n✓ Done in {elapsed:.0f}s", flush=True)
-        print(f"  {total_redactions:,} secrets removed from {len(flagged):,} files", flush=True)
+        print(f"  {total_redactions:,} secrets removed from {total_redacted_files:,} files", flush=True)
         if sqlite_total:
             print(f"  {sqlite_total:,} secrets removed from database history", flush=True)
         print(f"  {max_backups} backups kept  (~/.agentscrub/backups/)", flush=True)
         if errors:
             print(f"  {len(errors)} errors", flush=True)
+        if still_exposed:
+            print(f"  {len(still_exposed)} files still contain secrets after cleanup", flush=True)
         print(flush=True)
 
 
