@@ -178,6 +178,10 @@ _REGISTRY: list[dict] = [
         display="Gemini CLI",
         # ~/.gemini also contains the Antigravity brain/skills tree
         dirs=["~/.gemini"],
+        # Antigravity's embedded Chromium profile is mostly browser caches,
+        # extension resources, Safe Browsing metadata, and live browser state,
+        # not Gemini CLI or agent transcript/history data.
+        exclude_dirs={"antigravity-browser-profile"},
         exclude_files={
             "oauth_creds.json",
             "mcp-oauth-tokens.json",
