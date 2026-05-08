@@ -575,6 +575,21 @@ def redact_file(args: tuple) -> tuple[str, int, str | None]:
         return path_str, 0, str(e)
 
 
+def _sqlite_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _sqlite_unique_columns(con: sqlite3.Connection, table: str) -> set[str]:
+    cols: set[str] = set()
+    for row in con.execute(f"PRAGMA index_list({_sqlite_ident(table)})").fetchall():
+        if not row[2]:
+            continue
+        index_name = row[1]
+        for info in con.execute(f"PRAGMA index_info({_sqlite_ident(index_name)})").fetchall():
+            cols.add(info[2])
+    return cols
+
+
 def redact_sqlite(
     secrets: set[str],
     targets: list[ScanTarget],
@@ -603,13 +618,21 @@ def redact_sqlite(
                 for (tname,) in tables:
                     if tname.startswith("_sqlx"):
                         continue
-                    cols = con.execute(f'PRAGMA table_info("{tname}")').fetchall()
-                    text_cols = [r[1] for r in cols if "text" in r[2].lower() or r[2] == ""]
+                    table_sql = _sqlite_ident(tname)
+                    cols = con.execute(f"PRAGMA table_info({table_sql})").fetchall()
+                    protected_cols = {
+                        r[1] for r in cols if r[5]
+                    } | _sqlite_unique_columns(con, tname)
+                    text_cols = [
+                        r[1] for r in cols
+                        if ("text" in r[2].lower() or r[2] == "")
+                        and r[1] not in protected_cols
+                    ]
                     if not text_cols:
                         continue
-                    col_list = ", ".join(f'"{c}"' for c in text_cols)
+                    col_list = ", ".join(_sqlite_ident(c) for c in text_cols)
                     rows = con.execute(
-                        f'SELECT rowid, {col_list} FROM "{tname}"'
+                        f"SELECT rowid, {col_list} FROM {table_sql}"
                     ).fetchall()
                     for row in rows:
                         rowid = row[0]
@@ -627,8 +650,8 @@ def redact_sqlite(
                                 db_count += n
                                 if not dry_run:
                                     con.execute(
-                                        f'UPDATE "{tname}" SET "{text_cols[i]}" = ?'
-                                        f' WHERE rowid = ?',
+                                        f"UPDATE {table_sql} SET {_sqlite_ident(text_cols[i])} = ?"
+                                        " WHERE rowid = ?",
                                         (new_val, rowid),
                                     )
                 if not dry_run and db_count:
