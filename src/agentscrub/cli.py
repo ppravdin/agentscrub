@@ -1347,23 +1347,28 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
-def main() -> None:
-    subcmd, ns = _parse()
-    if getattr(ns, "version", False):
-        _print_splash()
-        print(_ver())
-        return
-    if getattr(ns, "list_tools", False):
-        cmd_list_tools()
-        return
-    if subcmd == "doctor":
-        cmd_doctor()
-    elif subcmd == "schedule":
-        cmd_schedule(getattr(ns, "action", "status"))
-    elif subcmd == "rollback":
-        cmd_rollback(ns)
-    else:
-        cmd_scan_or_run(subcmd, ns)
+def main() -> int:
+    try:
+        subcmd, ns = _parse()
+        if getattr(ns, "version", False):
+            _print_splash()
+            print(_ver())
+            return 0
+        if getattr(ns, "list_tools", False):
+            cmd_list_tools()
+            return 0
+        if subcmd == "doctor":
+            cmd_doctor()
+        elif subcmd == "schedule":
+            cmd_schedule(getattr(ns, "action", "status"))
+        elif subcmd == "rollback":
+            cmd_rollback(ns)
+        else:
+            cmd_scan_or_run(subcmd, ns)
+    except KeyboardInterrupt:
+        p("\n[yellow]Aborted.[/yellow]")
+        return 130
+    return 0
 
 
 def cmd_list_tools() -> None:
@@ -1380,4 +1385,4 @@ def cmd_list_tools() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
