@@ -1292,16 +1292,15 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
     p(f"  [dim]{time.perf_counter()-t3:.1f}s[/dim]")
 
-    # Verify the files we just rewrote. This catches both redaction misses and
-    # live agent processes that append/restore old in-memory transcript content
-    # while agentscrub is running.
+    # Verify the files we just rewrote. If anything remains, call it a failed
+    # cleanup plainly; the final scan result matters more than write counts.
     still_exposed = grep_filter(actionable_redactable_secrets, flagged_redactable)
     if still_exposed:
         p(
             f"  [red]WARN[/red]  {len(still_exposed):,} redacted file(s) still contain "
             "detected secrets after cleanup"
         )
-        p("        [dim]Close running agent tools and run agentscrub again.[/dim]")
+        p("        [dim]Run agentscrub again; keep the full audit if this repeats.[/dim]")
         for fp in still_exposed[:5]:
             p(f"        [dim]{_label(str(fp))}[/dim]")
 

@@ -521,6 +521,16 @@ def _redact_obj(obj: object, secrets: frozenset[str]) -> tuple[object, int]:
     return obj, count
 
 
+def _redact_raw_line(line: str, secrets: frozenset[str]) -> tuple[str, int]:
+    new, count = line, 0
+    for s in secrets:
+        if s in new:
+            n = new.count(s)
+            new = new.replace(s, REDACTED)
+            count += n
+    return new, count
+
+
 def redact_file(args: tuple) -> tuple[str, int, str | None]:
     """Worker — must be top-level for multiprocessing.Pool pickling."""
     path_str, secrets, dry_run = args
@@ -535,17 +545,22 @@ def redact_file(args: tuple) -> tuple[str, int, str | None]:
             try:
                 obj = json.loads(stripped)
                 obj, n = _redact_obj(obj, secrets)
+                if n == 0:
+                    # Detectors scan raw JSONL. A token can be present in the
+                    # encoded line as JSON escapes (for example trailing "\\n")
+                    # but not match the decoded Python string byte-for-byte.
+                    # Fall back to raw-line replacement so the next scan sees
+                    # the file as clean.
+                    new, n = _redact_raw_line(stripped, secrets)
+                    total += n
+                    lines_out.append(new + ("\n" if line.endswith("\n") else ""))
+                    continue
                 total += n
                 lines_out.append(
                     json.dumps(obj, ensure_ascii=False) + ("\n" if line.endswith("\n") else "")
-                    if n else line
                 )
             except json.JSONDecodeError:
-                new, n = stripped, 0
-                for s in secrets:
-                    if s in new:
-                        n += new.count(s)
-                        new = new.replace(s, REDACTED)
+                new, n = _redact_raw_line(stripped, secrets)
                 total += n
                 lines_out.append(new + ("\n" if line.endswith("\n") else ""))
         if total == 0:
