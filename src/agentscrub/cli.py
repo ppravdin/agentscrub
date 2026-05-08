@@ -1296,7 +1296,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     sqlite_total, sqlite_results = redact_sqlite(redactable_secrets, targets, dry_run=False)
     if not sqlite_results:
         p("  [dim]no databases found[/dim]")
-    for db_path, count in sqlite_results:
+    for db_path, count, err in sqlite_results:
         label = str(db_path)
         # Find which tool owns this DB so the line reads "Codex CLI · logs_2.sqlite"
         owning = None
@@ -1310,7 +1310,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 continue
         prefix = f"[dim]{owning} ·[/dim] " if owning else ""
         if count < 0:
-            p(f"  [red]WARN[/red]  {prefix}{label}: error")
+            p(f"  [red]WARN[/red]  {prefix}{label}: {err or 'error'}")
         else:
             p(f"  [bold green] OK [/bold green]  {prefix}{label}  [dim]→[/dim]  {count:,}")
 

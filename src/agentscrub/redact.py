@@ -564,9 +564,9 @@ def redact_sqlite(
     secrets: set[str],
     targets: list[ScanTarget],
     dry_run: bool,
-) -> tuple[int, list[tuple[Path, int]]]:
-    """Redact text columns in all SQLite DBs. Returns (total, [(path, count)])."""
-    results: list[tuple[Path, int]] = []
+) -> tuple[int, list[tuple[Path, int, str | None]]]:
+    """Redact text columns in all SQLite DBs. Returns (total, [(path, count, error)])."""
+    results: list[tuple[Path, int, str | None]] = []
     for target in targets:
         seen_dbs: set[Path] = set()
         db_paths: list[Path] = []
@@ -620,7 +620,7 @@ def redact_sqlite(
                     con.commit()
                 con.close()
                 if db_count:
-                    results.append((db_path, db_count))
+                    results.append((db_path, db_count, None))
             except Exception as e:
-                results.append((db_path, -(1)))  # negative = error
-    return sum(c for _, c in results if c > 0), results
+                results.append((db_path, -1, str(e)))  # negative = error
+    return sum(c for _, c, _ in results if c > 0), results
