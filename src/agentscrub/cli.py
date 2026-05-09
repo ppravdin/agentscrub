@@ -772,9 +772,16 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         if not any(fp in _needs_scan_set for fp in _phase1_scanned_files
                    if _path_under(fp, t.path))
     }
+    # Per-target: how many files are actually being scanned vs cached
+    _scan_per_target = {
+        t: sum(1 for fp in _needs_scan if _path_under(fp, t.path))
+        for t in targets
+    }
 
     # ── phase 1: detect credentials ───────────────────────────────────────────
-    p("\n[bold cyan]Phase 1[/bold cyan]  [bold]Checking agent directories[/bold]")
+    _p1_cache = (f"  [dim]{_n_cached:,} cached · {len(_needs_scan):,} to scan[/dim]"
+                 if _n_cached else "")
+    p(f"\n[bold cyan]Phase 1[/bold cyan]  [bold]Checking agent directories[/bold]{_p1_cache}")
     t1 = time.perf_counter()
 
     if RICH:
@@ -789,24 +796,39 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         _t_finished  = {t.path: 0.0 for t in targets}
         by_tool: dict[str, dict] = {t: {} for t in _DETECTORS}
 
+        _has_any_cached = _n_cached > 0
+
         class _Phase1Live:
             def __rich_console__(self, console, options):
                 tbl = Table(box=None, show_header=True, padding=(0, 2),
                             header_style="bold cyan")
-                tbl.add_column("",        min_width=3)
-                tbl.add_column("Tool",    min_width=20)
-                tbl.add_column("Files",   justify="right")
-                tbl.add_column("Time",    style="dim")
+                tbl.add_column("",          min_width=3)
+                tbl.add_column("Tool",      min_width=20)
+                tbl.add_column("To Scan",   justify="right")
+                if _has_any_cached:
+                    tbl.add_column("Cached", justify="right", style="dim")
+                tbl.add_column("Time",      style="dim")
                 for t in targets:
-                    files_n = f"{_files_per_target_pre[t]:,}"
+                    scan_n  = _scan_per_target[t]
+                    total_n = _files_per_target_pre[t]
+                    scan_str = "—" if t in _cached_targets else f"{scan_n:,}"
+                    cached_str = f"{total_n - scan_n:,}"
                     done_n = _t_done_n[t.path]
                     if done_n >= len(_DETECTORS):
                         elapsed = _t_finished[t.path] - _t_started[t.path]
-                        tbl.add_row("[bold green]✓[/bold green]", t.display,
-                                    files_n, f"{elapsed:.0f}s")
+                        row = ["[bold green]✓[/bold green]", t.display,
+                               scan_str]
+                        if _has_any_cached:
+                            row.append(cached_str)
+                        row.append(f"{elapsed:.0f}s")
+                        tbl.add_row(*row)
                     else:
                         elapsed = time.perf_counter() - _t_started[t.path]
-                        tbl.add_row(_sp, t.display, files_n, f"{elapsed:.0f}s")
+                        row = [_sp, t.display, scan_str]
+                        if _has_any_cached:
+                            row.append(cached_str)
+                        row.append(f"{elapsed:.0f}s")
+                        tbl.add_row(*row)
                 yield tbl
 
         def _run_one(detector_name: str, fn) -> dict[str, str]:
@@ -857,6 +879,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                        for s in d if len(s) >= 8 and not s.isspace()}
         counts = {t: len(d) for t, d in _by_tool_plain.items()}
         _all_typed: dict[str, str] = {}
+        if _n_cached:
+            print(f"  {_n_cached:,} cached · {len(_needs_scan):,} to scan", flush=True)
         for tool, n in counts.items():
             print(f"  detector {tool:<12} {n:,}", flush=True)
         print(f"  {'total unique':<12} {len(all_secrets):,}", flush=True)
