@@ -545,20 +545,14 @@ def redact_file(args: tuple) -> tuple[str, int, str | None]:
             try:
                 obj = json.loads(stripped)
                 obj, n = _redact_obj(obj, secrets)
-                if n == 0:
-                    # Detectors scan raw JSONL. A token can be present in the
-                    # encoded line as JSON escapes (for example trailing "\\n")
-                    # but not match the decoded Python string byte-for-byte.
-                    # Fall back to raw-line replacement so the next scan sees
-                    # the file as clean.
-                    new, n = _redact_raw_line(stripped, secrets)
-                    total += n
-                    lines_out.append(new + ("\n" if line.endswith("\n") else ""))
-                    continue
-                total += n
-                lines_out.append(
-                    json.dumps(obj, ensure_ascii=False) + ("\n" if line.endswith("\n") else "")
-                )
+                # Detectors scan raw JSONL. A token can be present in the
+                # encoded line as JSON escapes (for example trailing "\\n")
+                # but not match the decoded Python string byte-for-byte.
+                # Always verify the encoded output and raw-replace leftovers.
+                new = json.dumps(obj, ensure_ascii=False) if n else stripped
+                new, raw_n = _redact_raw_line(new, secrets)
+                total += n + raw_n
+                lines_out.append(new + ("\n" if line.endswith("\n") else ""))
             except json.JSONDecodeError:
                 new, n = _redact_raw_line(stripped, secrets)
                 total += n
