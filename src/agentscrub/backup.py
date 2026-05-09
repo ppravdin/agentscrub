@@ -61,9 +61,43 @@ class Backup:
 
     @property
     def size_str(self) -> str:
-        r = subprocess.run(["du", "-sh", str(self.path)],
-                           capture_output=True, text=True)
-        return r.stdout.split()[0] if r.returncode == 0 else "?"
+        return _du_human([self.path])
+
+
+@dataclass
+class RestorePoint:
+    created: datetime
+    backups: list[Backup]
+
+    @property
+    def age_str(self) -> str:
+        delta = datetime.now() - self.created
+        if delta.days == 0:
+            return "today"
+        if delta.days == 1:
+            return "yesterday"
+        return f"{delta.days}d ago"
+
+    @property
+    def size_str(self) -> str:
+        return _du_human([b.path for b in self.backups])
+
+    @property
+    def displays(self) -> list[str]:
+        return [b.display for b in self.backups]
+
+
+def _du_human(paths: list[Path]) -> str:
+    if not paths:
+        return "?"
+    r = subprocess.run(
+        ["du", "-sch", *[str(p) for p in paths]],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return "?"
+    lines = [line.split()[0] for line in r.stdout.splitlines() if line.strip()]
+    return lines[-1] if lines else "?"
 
 
 def _load_or_create_key() -> bytes:
@@ -310,6 +344,26 @@ def list_backups(targets: list[ScanTarget]) -> list[Backup]:
             ))
 
     return result
+
+
+def list_restore_points(targets: list[ScanTarget]) -> list[RestorePoint]:
+    """Backups grouped by run timestamp, newest first."""
+    groups: dict[str, list[Backup]] = {}
+    for b in list_backups(targets):
+        groups.setdefault(b.created.strftime(_FMT), []).append(b)
+
+    points: list[RestorePoint] = []
+    for ts, backups in groups.items():
+        try:
+            created = datetime.strptime(ts, _FMT)
+        except ValueError:
+            continue
+        points.append(RestorePoint(
+            created=created,
+            backups=sorted(backups, key=lambda b: b.display),
+        ))
+    points.sort(key=lambda p: p.created, reverse=True)
+    return points
 
 
 def rotate_logs(max_keep: int = 30) -> None:

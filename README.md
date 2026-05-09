@@ -211,13 +211,15 @@ To restore:
 ```bash
 agentscrub rollback
 
-# Available backups
-#   1  Claude Code        2026-04-29 03:00  (today)     1.2G
-#   2  Claude Code        2026-04-28 03:00  (yesterday) 1.1G
-#   3  OpenAI Codex CLI   2026-04-29 03:00  (today)     240M
+# Available restore points
+#   1  2026-04-29 03:00   9 tools  (today)  1.8G
+#      Claude Code, OpenAI Codex CLI, Cursor, Gemini CLI, +5 more
+#   2  2026-04-28 03:00   9 tools  (yesterday)  1.7G
 #
-# Restore backup # (or q to quit): 1
+# Restore point # (or q to quit): 1
 ```
+
+Use `agentscrub rollback --by-tool` for advanced single-tool restores.
 
 ## What it does NOT catch
 

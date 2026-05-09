@@ -369,7 +369,7 @@ examples:
   agentscrub scan                      see what's exposed before touching anything
   agentscrub run                       redact (asks for confirmation)
   agentscrub run --yes                 redact without prompt — for cron / CI
-  agentscrub rollback                  pick a backup to restore
+  agentscrub rollback                  pick a restore point to restore
   agentscrub doctor                    check gitleaks / TruffleHog / Titus
   agentscrub schedule install          add daily 3am cron job
   agentscrub schedule uninstall        remove cron job
@@ -401,6 +401,8 @@ examples:
     elif subcmd == "rollback":
         ap.add_argument("--list", action="store_true",
                         help="show available backups without restoring")
+        ap.add_argument("--by-tool", action="store_true",
+                        help="restore one tool backup instead of a full restore point")
 
     elif subcmd == "schedule":
         ap.add_argument("action", nargs="?",
@@ -554,48 +556,97 @@ def cmd_schedule(action: str) -> None:
 
 def cmd_rollback(ns: argparse.Namespace) -> None:
     from .discover import discover
-    from .backup import list_backups, rollback
+    from .backup import list_backups, list_restore_points, rollback
 
     targets = discover()
     if not targets:
         p("[red]No AI tool directories found.[/red]\n"); return
 
-    backups = list_backups(targets)
-    if not backups:
+    if getattr(ns, "by_tool", False):
+        backups = list_backups(targets)
+        if not backups:
+            p("[yellow]No backups in ~/.agentscrub/backups/ yet.[/yellow]\n"); return
+
+        p("\n[bold]Available tool backups[/bold]\n")
+        for i, b in enumerate(backups, 1):
+            p(f"  [bold]{i:2d}[/bold]  {b.display:<22} "
+              f"{b.created.strftime('%Y-%m-%d %H:%M')}  "
+              f"[dim]({b.age_str})  {b.size_str}[/dim]")
+        p()
+
+        if ns.list:
+            return
+
+        try:
+            raw = input("Restore tool backup # (or q to quit): ").strip()
+        except EOFError:
+            return
+        if not raw.isdigit() or raw.lower() == "q":
+            p("[dim]Aborted.[/dim]\n"); return
+        idx = int(raw) - 1
+        if not (0 <= idx < len(backups)):
+            p("[red]Invalid selection.[/red]\n"); return
+
+        chosen = backups[idx]
+        p(f"\n[yellow]Restoring {chosen.path} → {chosen.source} …[/yellow]")
+        ok, stderr = rollback(chosen)
+        if ok:
+            p("[bold green]✓[/bold green]  Rollback complete.\n")
+            if stderr:
+                p(f"[dim]  rsync notes:\n{stderr}[/dim]\n")
+        else:
+            p("[bold red]✗[/bold red]  rsync failed:\n")
+            if stderr:
+                p(f"[red]{stderr}[/red]\n")
+            p("[dim]Check manually with the path above.[/dim]\n")
+        return
+
+    points = list_restore_points(targets)
+    if not points:
         p("[yellow]No backups in ~/.agentscrub/backups/ yet.[/yellow]\n"); return
 
-    p("\n[bold]Available backups[/bold]\n")
-    for i, b in enumerate(backups, 1):
-        p(f"  [bold]{i:2d}[/bold]  {b.display:<22} "
-          f"{b.created.strftime('%Y-%m-%d %H:%M')}  "
-          f"[dim]({b.age_str})  {b.size_str}[/dim]")
+    p("\n[bold]Available restore points[/bold]\n")
+    for i, point in enumerate(points, 1):
+        tools = ", ".join(point.displays[:4])
+        if len(point.displays) > 4:
+            tools += f", +{len(point.displays) - 4} more"
+        p(f"  [bold]{i:2d}[/bold]  {point.created.strftime('%Y-%m-%d %H:%M')}  "
+          f"{len(point.backups):>2} tools  "
+          f"[dim]({point.age_str})  {point.size_str}[/dim]")
+        p(f"      [dim]{tools}[/dim]")
     p()
 
     if ns.list:
         return
 
     try:
-        raw = input("Restore backup # (or q to quit): ").strip()
+        raw = input("Restore point # (or q to quit): ").strip()
     except EOFError:
         return
     if not raw.isdigit() or raw.lower() == "q":
         p("[dim]Aborted.[/dim]\n"); return
     idx = int(raw) - 1
-    if not (0 <= idx < len(backups)):
+    if not (0 <= idx < len(points)):
         p("[red]Invalid selection.[/red]\n"); return
 
-    chosen = backups[idx]
-    p(f"\n[yellow]Restoring {chosen.path} → {chosen.source} …[/yellow]")
-    ok, stderr = rollback(chosen)
-    if ok:
-        p("[bold green]✓[/bold green]  Rollback complete.\n")
+    chosen = points[idx]
+    p(f"\n[yellow]Restoring {chosen.created.strftime('%Y-%m-%d %H:%M')} "
+      f"restore point ({len(chosen.backups)} tools) …[/yellow]")
+    failed = 0
+    for b in chosen.backups:
+        ok, stderr = rollback(b)
+        if ok:
+            p(f"  [green]✓[/green]  {b.display:<22} [dim]{b.source}[/dim]")
+        else:
+            failed += 1
+            p(f"  [red]✗[/red]  {b.display:<22} [red]{stderr or 'restore failed'}[/red]")
         if stderr:
             p(f"[dim]  rsync notes:\n{stderr}[/dim]\n")
+
+    if failed:
+        p(f"\n[bold red]✗[/bold red]  Rollback completed with {failed} failed tool(s).\n")
     else:
-        p("[bold red]✗[/bold red]  rsync failed:\n")
-        if stderr:
-            p(f"[red]{stderr}[/red]\n")
-        p("[dim]Check manually with the path above.[/dim]\n")
+        p("\n[bold green]✓[/bold green]  Rollback complete.\n")
 
 
 # ── scan & run ────────────────────────────────────────────────────────────────
