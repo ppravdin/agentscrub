@@ -737,7 +737,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         g = Table.grid(padding=(0, 2))
         g.add_column(style="dim")
         g.add_column()
-        g.add_row("", f"[bold]agentscrub[/bold]  {mode}")
+        from . import __version__ as _ver_str
+        g.add_row("", f"[bold]agentscrub[/bold]  {mode}  [dim]v{_ver_str}[/dim]")
         g.add_row("", f"[dim]{n_tools} agent {tool_word}  ·  {WORKERS} workers[/dim]")
         _CON.print(Panel(g, box=box.ROUNDED, padding=(0, 1), expand=False))
     else:
@@ -843,6 +844,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         print(f"  {time.perf_counter()-t1:.1f}s", flush=True)
 
     if not all_secrets:
+        mark_clean(_needs_scan)
         p("\n[bold green]Clean — no credential patterns found.[/bold green]\n")
         return
 
@@ -1441,8 +1443,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         g.add_column()
         g.add_row(f"[bold green]✓ Done[/bold green]", f"[dim]in {elapsed:.0f}s[/dim]")
         g.add_row("", "")
-        g.add_row(f"[bold green]{total_hits_redactable:,}[/bold green]",
-                  f"secrets removed from [bold]{total_redacted_files:,}[/bold] text files")
+        g.add_row(f"[bold green]{len(actionable_redactable_secrets):,}[/bold green]",
+                  f"secrets removed from [bold]{total_redacted_files:,}[/bold] files  [dim]({total_hits_redactable:,} times)[/dim]")
         if sqlite_total:
             g.add_row(f"[bold green]{sqlite_total:,}[/bold green]",
                       "secrets removed from database history")
@@ -1458,7 +1460,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                           border_style="green", expand=False, title="[bold green]Scrub complete[/bold green]"))
     else:
         print(f"\n✓ Done in {elapsed:.0f}s", flush=True)
-        print(f"  {total_hits_redactable:,} secrets removed from {total_redacted_files:,} files", flush=True)
+        print(f"  {len(actionable_redactable_secrets):,} secrets removed from {total_redacted_files:,} files ({total_hits_redactable:,} times)", flush=True)
         if sqlite_total:
             print(f"  {sqlite_total:,} secrets removed from database history", flush=True)
         print(f"  {max_backups} backups kept  (~/.agentscrub/backups/)", flush=True)
