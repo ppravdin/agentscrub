@@ -1131,6 +1131,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         redactable_secrets, report_only_secrets = set(), set()
         flagged_redactable, flagged_lowconf_only = [], []
         actionable_redactable_secrets = set()
+        total_hits_redactable = 0
 
     if not flagged:
         if preserved:
@@ -1440,7 +1441,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         g.add_column()
         g.add_row(f"[bold green]✓ Done[/bold green]", f"[dim]in {elapsed:.0f}s[/dim]")
         g.add_row("", "")
-        g.add_row(f"[bold green]{total_redactions:,}[/bold green]",
+        g.add_row(f"[bold green]{total_hits_redactable:,}[/bold green]",
                   f"secrets removed from [bold]{total_redacted_files:,}[/bold] text files")
         if sqlite_total:
             g.add_row(f"[bold green]{sqlite_total:,}[/bold green]",
@@ -1457,7 +1458,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                           border_style="green", expand=False, title="[bold green]Scrub complete[/bold green]"))
     else:
         print(f"\n✓ Done in {elapsed:.0f}s", flush=True)
-        print(f"  {total_redactions:,} secrets removed from {total_redacted_files:,} files", flush=True)
+        print(f"  {total_hits_redactable:,} secrets removed from {total_redacted_files:,} files", flush=True)
         if sqlite_total:
             print(f"  {sqlite_total:,} secrets removed from database history", flush=True)
         print(f"  {max_backups} backups kept  (~/.agentscrub/backups/)", flush=True)
