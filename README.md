@@ -16,7 +16,7 @@ user: I pasted the staging env for the deploy:
       NPM_TOKEN=npm_A4bC8dEfG2hIjKlMnOpQrSt5UvWxYz3456
 
 Claude Code: The failing request used:
-             Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEyMyIsInJvbGUiOiJhZG1pbiJ9.dGhpc2lzYWZha2VzaWduYXR1cmU
+             Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJpZCI6MX0.SflKxwRJSMeK
 ```
 
 After `agentscrub run`:
