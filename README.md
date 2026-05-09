@@ -32,6 +32,12 @@ Claude Code: The failing request used:
 
 https://github.com/user-attachments/assets/9a770a0c-aaa1-42cd-aca8-5e7421c163ea
 
+Set up daily cleaning and never worry again about the fact that you shared some secret with your AI agent:
+
+```bash
+pipx install agentscrub
+agentscrub schedule install   # daily cron job at 03:00, backup before every run
+```
 
 ## Quick start
 
