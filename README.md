@@ -6,7 +6,7 @@
 
 agentscrub is an open-source CLI that runs locally and scans AI coding-agent histories, transcripts, tool-call logs, command traces, caches, and local state files.
 
-AI tools like Claude Code, Codex CLI, Cursor, Gemini CLI, Windsurf, Cline, Continue, and others can store sensitive data locally: pasted API keys, `.env` contents, database URLs, JWTs, OAuth tokens, cloud credentials, MCP settings, and shell output. Malware, rogue extensions, compromised packages, or anyone with local machine access can scan those files for credentials. agentscrub reports masked findings, creates backups, and redacts leaked copies after confirmation.
+AI tools like Claude Code, Codex CLI, Cursor, Gemini CLI, Windsurf, Cline, Continue, and others can store sensitive data locally: pasted API keys, `.env` contents, database URLs, JWTs, OAuth tokens, cloud keys, and shell output. Malware, rogue extensions, compromised packages, or anyone with local machine access can scan those logs for secrets. agentscrub reports masked findings, creates backups, and redacts leaked copies after confirmation.
 
 https://github.com/user-attachments/assets/9a770a0c-aaa1-42cd-aca8-5e7421c163ea
 
@@ -36,7 +36,7 @@ agentscrub schedule status
 
 - `scan` is **read-only**. It never modifies a file. Use it to see what's exposed.
 - `run` writes an **encrypted timestamped backup** of the files it may change before touching anything. Restore with `agentscrub rollback`.
-- **Live auth and MCP credential stores are preserved by design.** Files like `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, `cline_mcp_settings.json`, and the Windsurf / OpenCode / Crush / Continue config files are scanned and reported but never modified. [Full list below](#live-auth--mcp-files-preserved-scanned-reported-never-modified).
+- **Live login and config files are preserved by design.** Files like `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, and agent config files are scanned and reported but never modified. [Full list below](#live-login--config-files-preserved-scanned-reported-never-modified).
 - **Raw secrets are never printed in reports.** Each match gets a stable proof hash so you can correlate the same secret across files without exposing it.
 - All scanners run **locally**. Nothing leaves your machine.
 
@@ -45,7 +45,7 @@ agentscrub schedule status
 ```mermaid
 flowchart TD
     A[Agent dirs<br/>~/.claude, ~/.codex, ~/.cursor, ...] --> B[3 scanners find secrets]
-    B --> C{Live auth /<br/>MCP file?}
+    B --> C{Live login<br/>or config file?}
     C -->|Yes| D[Reported<br/>Never modified]
     C -->|No| E[Backup +<br/>Redact in place]
 ```
@@ -79,7 +79,7 @@ secrets.
 | Aider | `~/.aider/` | repo-local `.aider.input.history` / `.aider.chat.history.md` are out of scope. Pass them with `--also <path>` |
 | Continue | `~/.continue/` | CLI sessions in `~/.continue/sessions/` |
 
-### Live auth & MCP files preserved (scanned, reported, **never modified**)
+### Live login & config files preserved (scanned, reported, **never modified**)
 
 `agentscrub run` will not write to any of the following. They're the live
 credentials your agent needs to keep working. They're still scanned and any
@@ -101,7 +101,7 @@ matched patterns are reported, so you can review them by hand if needed.
 | Generic | everything under `~/.mcp-auth/` |
 
 The goal is to remove leaked copies from logs, histories, and caches without
-breaking agent logins or MCP connections.
+breaking agent logins or runtime configuration.
 
 Each scan or run writes one masked full audit to `~/.agentscrub/logs/`:
 
