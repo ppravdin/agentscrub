@@ -1,12 +1,12 @@
 # agentscrub
 
-![agentscrub — scan code and logs, detect secrets, protect everywhere](assets/cover.png)
+![agentscrub scans local AI agent logs for leaked secrets](assets/cover.png)
 
-**Clean the secrets your AI coding agents leave behind.**
+**Find and redact leaked secrets in local AI coding-agent logs.**
 
-agentscrub is an open-source, local-first CLI for finding and redacting leaked secrets in AI coding-agent histories, transcripts, tool-call logs, command traces, caches, and local state files.
+agentscrub is an open-source CLI that runs locally and scans AI coding-agent histories, transcripts, tool-call logs, command traces, caches, and local state files.
 
-AI tools like Claude Code, Codex CLI, Cursor, Gemini CLI, Windsurf, Cline, Continue, and others can store sensitive data locally: pasted API keys, `.env` contents, database URLs, JWTs, OAuth tokens, cloud credentials, MCP settings, and shell output. Malware, rogue extensions, compromised packages, or anyone with local machine access can scan those files for credentials. agentscrub scans locally, reports masked findings, and can safely redact leaked copies with backups and rollback.
+AI tools like Claude Code, Codex CLI, Cursor, Gemini CLI, Windsurf, Cline, Continue, and others can store sensitive data locally: pasted API keys, `.env` contents, database URLs, JWTs, OAuth tokens, cloud credentials, MCP settings, and shell output. Malware, rogue extensions, compromised packages, or anyone with local machine access can scan those files for credentials. agentscrub reports masked findings, creates backups, and redacts leaked copies after confirmation.
 
 https://github.com/user-attachments/assets/9a770a0c-aaa1-42cd-aca8-5e7421c163ea
 
@@ -20,11 +20,11 @@ pip install agentscrub
 # Or, recommended for CLI tools
 pipx install agentscrub
 
-# Read-only audit — writes nothing
+# Read-only audit. Writes nothing.
 # If scanners are missing, agentscrub offers to install them automatically.
 agentscrub scan
 
-# Redact in place — asks for confirmation, takes a backup first
+# Redact in place. Asks for confirmation and takes a backup first.
 agentscrub run
 
 # Optional: backup + redact daily at 03:00
@@ -36,7 +36,7 @@ agentscrub schedule status
 
 - `scan` is **read-only**. It never modifies a file. Use it to see what's exposed.
 - `run` writes an **encrypted timestamped backup** of the files it may change before touching anything. Restore with `agentscrub rollback`.
-- **Live auth and MCP credential stores are preserved by design** — files like `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, `cline_mcp_settings.json`, and the Windsurf / OpenCode / Crush / Continue config files are scanned and reported but never modified. [Full list below](#live-auth--mcp-files-preserved-scanned-reported-never-modified).
+- **Live auth and MCP credential stores are preserved by design.** Files like `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, `cline_mcp_settings.json`, and the Windsurf / OpenCode / Crush / Continue config files are scanned and reported but never modified. [Full list below](#live-auth--mcp-files-preserved-scanned-reported-never-modified).
 - **Raw secrets are never printed in reports.** Each match gets a stable proof hash so you can correlate the same secret across files without exposing it.
 - All scanners run **locally**. Nothing leaves your machine.
 
@@ -52,8 +52,8 @@ flowchart TD
 
 ## What it covers
 
-All tools are **auto-detected** — no configuration required. Each row lists every
-folder agentscrub recognises across Linux, macOS, and Windows; the first one
+agentscrub detects supported tools automatically. No config file is required.
+Each row lists every folder agentscrub recognises across Linux, macOS, and Windows; the first one
 that exists on your machine is scanned. Plain-text logs, JSONL sessions, and
 JSON state files are scrubbed in place; SQLite databases (`.sqlite`, `.db`,
 `.vscdb`) are scrubbed via SQL UPDATE on text columns containing detected
@@ -76,12 +76,12 @@ secrets.
 | Crush (Charm) | `~/.local/share/crush/` (state, logs) and `~/.config/crush/` (config) | per-workspace `.crush/` state, `crush.log` |
 | Cline | VS Code `globalStorage/saoudrizwan.claude-dev/` (cross-OS) **or** `~/.cline/data/` (CLI mode) | `tasks/<id>/`, `state/`, `checkpoints/` |
 | GitHub Copilot Chat | `Code/User/workspaceStorage/*/GitHub.copilot-chat/` (cross-OS, scoped to the Copilot extension only) | `chatSessions/`, `transcripts/`, plus `state.vscdb` chat data |
-| Aider | `~/.aider/` | repo-local `.aider.input.history` / `.aider.chat.history.md` are out of scope — pass them with `--also <path>` |
+| Aider | `~/.aider/` | repo-local `.aider.input.history` / `.aider.chat.history.md` are out of scope. Pass them with `--also <path>` |
 | Continue | `~/.continue/` | CLI sessions in `~/.continue/sessions/` |
 
 ### Live auth & MCP files preserved (scanned, reported, **never modified**)
 
-`agentscrub run` will not write to any of the following — they're the live
+`agentscrub run` will not write to any of the following. They're the live
 credentials your agent needs to keep working. They're still scanned and any
 matched patterns are reported, so you can review them by hand if needed.
 
@@ -105,7 +105,7 @@ breaking agent logins or MCP connections.
 
 Each scan or run writes one masked full audit to `~/.agentscrub/logs/`:
 
-- `scan-...-full.txt` — complete file-by-file audit with detected pattern type,
+- `scan-...-full.txt`: complete file-by-file audit with detected pattern type,
   hit count, and proof hash for every affected file.
 
 Old reports are rotated automatically: agentscrub keeps the newest 30 scan
@@ -168,7 +168,7 @@ installer prompt before scanning.
 ## Usage
 
 ```bash
-# See what's exposed — no writes
+# See what's exposed. No writes.
 agentscrub scan
 
 # Redact (asks for confirmation, creates backup first)
@@ -191,7 +191,7 @@ agentscrub schedule uninstall
 # Scan an extra directory not in the auto-detect list
 agentscrub run --also ~/my-other-ai-tool
 
-# Limit the run to specific tools — repeatable or comma-separated
+# Limit the run to specific tools. Repeatable or comma-separated.
 agentscrub run --only claude
 agentscrub run --only claude,codex
 agentscrub --list-tools             # show every known tool ID
@@ -273,7 +273,7 @@ dict(
 ),
 ```
 
-Open a PR — contributions welcome.
+Open a PR. Contributions are welcome.
 
 ## Upgrade / uninstall
 
