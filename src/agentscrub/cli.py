@@ -778,7 +778,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     t1 = time.perf_counter()
 
     if RICH:
-        from .secrets import _gitleaks, _trufflehog, _titus
+        from .secrets import _gitleaks, _trufflehog, _titus, _run_on_files
         import threading as _threading
         _DETECTORS = ("gitleaks", "trufflehog", "titus")
         _fns       = {"gitleaks": _gitleaks, "trufflehog": _trufflehog, "titus": _titus}
@@ -813,7 +813,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             out: dict[str, str] = {}
             for target in targets:
                 if target not in _cached_targets:
-                    result = fn(target.path)
+                    uncached_here = [fp for fp in _needs_scan
+                                     if _path_under(fp, target.path)]
+                    result = _run_on_files(uncached_here, fn)
                     out.update(result)
                 with _t_lock:
                     _t_done_n[target.path] += 1
@@ -835,8 +837,25 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         _type_counts = _top_types(by_tool)
         _all_typed   = _all_typed_fn(by_tool)
     else:
+        from .secrets import _run_on_files as _rof, _gitleaks, _trufflehog, _titus
+        import concurrent.futures as _cf
         active_targets = [t for t in targets if t not in _cached_targets]
-        all_secrets, counts = collect(active_targets)
+        _all_uncached = [fp for t in active_targets
+                         for fp in _needs_scan if _path_under(fp, t.path)]
+        _by_tool_plain: dict[str, dict[str, str]] = {
+            "gitleaks": {}, "trufflehog": {}, "titus": {},
+        }
+        with _cf.ThreadPoolExecutor() as _ex:
+            _futs2 = [
+                ("gitleaks",   _ex.submit(_rof, _all_uncached, _gitleaks)),
+                ("trufflehog", _ex.submit(_rof, _all_uncached, _trufflehog)),
+                ("titus",      _ex.submit(_rof, _all_uncached, _titus)),
+            ]
+            for _tool, _fut in _futs2:
+                _by_tool_plain[_tool].update(_fut.result())
+        all_secrets = {s for d in _by_tool_plain.values()
+                       for s in d if len(s) >= 8 and not s.isspace()}
+        counts = {t: len(d) for t, d in _by_tool_plain.items()}
         _all_typed: dict[str, str] = {}
         for tool, n in counts.items():
             print(f"  detector {tool:<12} {n:,}", flush=True)

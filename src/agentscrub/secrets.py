@@ -119,6 +119,41 @@ def _titus(d: Path) -> dict[str, str]:
     return s
 
 
+def _run_on_files(files: list[Path], fn) -> dict[str, str]:
+    """Run a directory-scanning detector on a specific file list via a temp dir.
+
+    Hard-links files into a temp dir on the same filesystem so the detector
+    scans only the files that actually need scanning (uncached / changed).
+    Falls back to shutil.copy2 if hard links are unavailable (cross-device).
+    """
+    if not files:
+        return {}
+    import shutil as _shutil
+    from .backup import BACKUP_ROOT
+    try:
+        tmp_parent = BACKUP_ROOT.parent
+        tmp_parent.mkdir(parents=True, exist_ok=True)
+        td: tempfile.TemporaryDirectory = tempfile.TemporaryDirectory(
+            dir=str(tmp_parent), prefix="scan_"
+        )
+    except OSError:
+        td = tempfile.TemporaryDirectory(prefix="agentscrub_scan_")
+    with td as tmp:
+        tmp_path = Path(tmp)
+        linked = 0
+        for i, fp in enumerate(files):
+            dest = tmp_path / f"{i:08d}{fp.suffix}"
+            try:
+                os.link(fp, dest)
+            except OSError:
+                try:
+                    _shutil.copy2(str(fp), str(dest))
+                except OSError:
+                    continue
+            linked += 1
+        return fn(tmp_path) if linked else {}
+
+
 def collect(targets: list[ScanTarget]) -> tuple[set[str], dict[str, int]]:
     """
     Run all three tools across all target dirs in parallel.
