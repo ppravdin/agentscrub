@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "cryptography==45.0.7",
+    "cryptography==46.0.7",
     "rich==14.3.4",
     "cffi==1.17.1; platform_python_implementation != 'PyPy'",
     "markdown-it-py==3.0.0",
