@@ -116,7 +116,7 @@ def _write_scan_report(
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     created = datetime.now()
     stamp = created.strftime('%Y%m%d-%H%M%S')
-    full_path = LOG_DIR / f"scan-{stamp}-full.txt"
+    report_path = LOG_DIR / f"scan-{stamp}.txt"
 
     def _file_stats(fp: Path) -> tuple[int, int, int, list[dict[str, object]], list[dict[str, object]]]:
         findings = findings_by_file.get(fp, [])
@@ -202,7 +202,7 @@ def _write_scan_report(
                 f"{preview:<24}   {hash_part}\n"
             )
         if limit and len(ordered) > limit:
-            fh.write(f"{indent}... {len(ordered) - limit:,} more findings in full audit\n")
+            fh.write(f"{indent}... {len(ordered) - limit:,} more findings in audit\n")
 
     def _write_file_block(
         fh,
@@ -232,7 +232,7 @@ def _write_scan_report(
         limit: int | None = None,
         credential_limit: int | None = None,
         noisy_limit: int | None = None,
-        more_hint: str = "in full audit",
+        more_hint: str = "in audit",
     ) -> None:
         fh.write(f"\n{title}\n")
         fh.write("=" * len(title) + "\n")
@@ -323,13 +323,13 @@ def _write_scan_report(
             for label, files_n, hits_n in pattern_counts[:20]:
                 fh.write(f"{label:<32} {files_n:>8,} {hits_n:>10,}\n")
             if len(pattern_counts) > 20:
-                fh.write(f"... {len(pattern_counts) - 20:,} more pattern types in full audit\n")
+                fh.write(f"... {len(pattern_counts) - 20:,} more pattern types in audit\n")
 
     def _write_preserved(fh) -> None:
         _write_group(fh, "Live auth/MCP files preserved (with credential-like findings)", preserved_with_credentials)
         _write_group(fh, "Live auth/MCP files preserved (low-signal matches only)", preserved_low_signal_only)
 
-    with full_path.open("w", encoding="utf-8") as fh:
+    with report_path.open("w", encoding="utf-8") as fh:
         _write_header(fh, "agentscrub full scan audit")
         _write_result(fh)
         _write_by_tool(fh)
@@ -341,7 +341,7 @@ def _write_scan_report(
     from .backup import rotate_logs
     rotate_logs()
 
-    return full_path
+    return report_path
 
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
@@ -897,7 +897,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     # Preserved live auth/MCP files are not announced on stdout — the
     # exclude_dirs / exclude_files lists silently skip plenty of paths to
     # protect user data, and singling out this one bucket inconsistently
-    # makes the run noisier without adding info. The full audit report
+    # makes the run noisier without adding info. The audit report
     # still has dedicated sections listing every preserved file and its
     # matches.
 
@@ -1084,7 +1084,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                     flush=True,
                 )
 
-        p(f"\n[bold cyan]Full audit[/bold cyan]  [dim]{full_report_path}[/dim]")
+        p(f"\n[bold cyan]Audit[/bold cyan]  [dim]{full_report_path}[/dim]")
     else:
         # No findings at all — nothing to partition; still set defaults
         # so the rest of the function compiles without unbound names.
@@ -1360,7 +1360,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             f"  [red]WARN[/red]  {len(still_exposed):,} redacted file(s) still contain "
             "detected secrets after cleanup"
         )
-        p("        [dim]Run agentscrub again; keep the full audit if this repeats.[/dim]")
+        p("        [dim]Run agentscrub again; keep the audit if this repeats.[/dim]")
         for fp in still_exposed[:5]:
             p(f"        [dim]{_label(str(fp))}[/dim]")
 

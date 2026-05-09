@@ -103,9 +103,9 @@ matched patterns are reported, so you can review them by hand if needed.
 The goal is to remove leaked copies from logs, histories, and caches without
 breaking agent logins or runtime configuration.
 
-Each scan or run writes one masked full audit to `~/.agentscrub/logs/`:
+Each scan or run writes one masked audit to `~/.agentscrub/logs/`:
 
-- `scan-...-full.txt`: complete file-by-file audit with detected pattern type,
+- `scan-YYYYMMDD-HHMMSS.txt`: complete file-by-file audit with detected pattern type,
   hit count, and proof hash for every affected file.
 
 Old reports are rotated automatically: agentscrub keeps the newest 30 scan

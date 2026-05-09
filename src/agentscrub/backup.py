@@ -418,11 +418,11 @@ def list_restore_points(targets: list[ScanTarget]) -> list[RestorePoint]:
 def rotate_logs(max_keep: int = 30) -> None:
     """Keep logs bounded so scheduled scans do not grow ~/.agentscrub forever.
 
-    Current scan reports are named scan-<timestamp>-full.txt. Older agentscrub
-    versions also wrote scan-<timestamp>-summary.txt and scan-<timestamp>.txt.
-    Summaries are redundant now that only the full audit is linked, so prune
-    them aggressively. Keep the newest max_keep full/legacy scan reports and
-    newest max_keep cron stdout logs.
+    Current scan reports are named scan-<timestamp>.txt. Older agentscrub
+    versions also wrote scan-<timestamp>-full.txt and scan-<timestamp>-summary.txt.
+    Summaries are redundant now that a single audit is linked, so prune them
+    aggressively. Keep the newest max_keep scan reports and newest max_keep
+    cron stdout logs.
     """
     if not LOG_DIR.exists():
         return
