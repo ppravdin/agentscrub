@@ -203,8 +203,8 @@ permissions so scheduled runs work without prompts.
 ```
 
 Oldest backups are rotated out automatically (default: keep 3 per tool). Old
-plaintext backup folders from earlier versions are encrypted automatically the
-next time agentscrub creates or lists backups.
+plaintext backup folders from earlier versions remain restorable and are rotated
+out normally as newer encrypted backups are created.
 
 To restore:
 

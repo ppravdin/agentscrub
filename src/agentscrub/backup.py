@@ -253,7 +253,6 @@ def backup(targets: list[ScanTarget], max_keep: int = 3) -> list[Backup]:
     """
     BACKUP_ROOT.mkdir(parents=True, exist_ok=True)
     os.chmod(BACKUP_ROOT.parent, 0o700)
-    migrate_plaintext_backups(targets)
     ts = datetime.now().strftime(_FMT)
     created: list[Backup] = []
 
@@ -292,7 +291,6 @@ def list_backups(targets: list[ScanTarget]) -> list[Backup]:
     """All backups for the given targets, newest first."""
     if not BACKUP_ROOT.exists():
         return []
-    migrate_plaintext_backups(targets)
     tool_map = {t.tool: t for t in targets}
     result: list[Backup] = []
 
