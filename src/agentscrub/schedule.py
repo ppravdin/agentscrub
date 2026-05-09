@@ -14,8 +14,23 @@ def _bin() -> str:
 
 
 def _current_cron() -> str:
+    if not shutil.which("crontab"):
+        raise RuntimeError("crontab not found — install cron first")
     r = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-    return r.stdout if r.returncode == 0 else ""
+    if r.returncode == 0:
+        return r.stdout
+    err = (r.stderr or "").strip()
+    if "no crontab for" in err.lower():
+        return ""
+    raise RuntimeError(err or "could not read user crontab")
+
+
+def _write_cron(cron: str) -> None:
+    if not shutil.which("crontab"):
+        raise RuntimeError("crontab not found — install cron first")
+    r = subprocess.run(["crontab", "-"], input=cron, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout or "could not write user crontab").strip())
 
 
 def install() -> str:
@@ -28,11 +43,10 @@ def install() -> str:
         f"0 3 * * * mkdir -p ~/.agentscrub/logs && "
         f"{_bin()} run --yes > ~/.agentscrub/logs/$(date +\\%Y\\%m\\%d).log 2>&1 {_MARKER}"
     )
-    subprocess.run(
-        ["crontab", "-"],
-        input=cron.rstrip() + "\n" + line + "\n",
-        text=True, check=True,
-    )
+    _write_cron(cron.rstrip() + "\n" + line + "\n")
+    installed = status()
+    if installed != line:
+        raise RuntimeError("cron accepted the install but the agentscrub entry is not present in crontab")
     return line
 
 
@@ -42,7 +56,7 @@ def uninstall() -> bool:
     if _MARKER not in cron:
         return False
     new = "\n".join(l for l in cron.splitlines() if _MARKER not in l) + "\n"
-    subprocess.run(["crontab", "-"], input=new, text=True, check=True)
+    _write_cron(new)
     return True
 
 
