@@ -19,6 +19,7 @@ KEY_PATH    = Path.home() / ".agentscrub" / "key"
 LOG_DIR     = Path.home() / ".agentscrub" / "logs"
 _FMT = "%Y%m%d-%H%M%S"
 _ENC_SUFFIX = ".tar.gz.enc"
+_PARTIAL_ENC_SUFFIX = ".partial.tar.gz.enc"
 _MAGIC = b"agentscrub-backup-v1\n"
 _CHUNK = 1024 * 1024
 
@@ -49,6 +50,7 @@ class Backup:
     display: str
     created: datetime
     encrypted: bool = True
+    partial: bool = False
 
     @property
     def age_str(self) -> str:
@@ -199,30 +201,48 @@ def _tar_dir_contents(source: Path, tar_path: Path) -> None:
             tf.add(child, arcname=child.name)
 
 
+def _tar_files(source: Path, files: list[Path], tar_path: Path) -> None:
+    with tarfile.open(tar_path, "w:gz") as tf:
+        for fp in sorted(set(files)):
+            try:
+                rel = fp.relative_to(source)
+            except ValueError:
+                continue
+            if fp.exists() and fp.is_file():
+                tf.add(fp, arcname=rel.as_posix())
+
+
 def _extract_tar(tar_path: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(tar_path, "r:gz") as tf:
         tf.extractall(dest)
 
 
-def _encrypted_path(tool_dir: Path, ts: str) -> Path:
-    return tool_dir / f"{ts}{_ENC_SUFFIX}"
+def _encrypted_path(tool_dir: Path, ts: str, *, partial: bool = False) -> Path:
+    suffix = _PARTIAL_ENC_SUFFIX if partial else _ENC_SUFFIX
+    return tool_dir / f"{ts}{suffix}"
 
 
-def _parse_backup_entry(path: Path) -> tuple[datetime, bool] | None:
+def _parse_backup_entry(path: Path) -> tuple[datetime, bool, bool] | None:
     if path.is_dir():
         name = path.name
         encrypted = False
+        partial = False
+    elif path.is_file() and path.name.endswith(_PARTIAL_ENC_SUFFIX):
+        name = path.name[:-len(_PARTIAL_ENC_SUFFIX)]
+        encrypted = True
+        partial = True
     elif path.is_file() and path.name.endswith(_ENC_SUFFIX):
         name = path.name[:-len(_ENC_SUFFIX)]
         encrypted = True
+        partial = False
     else:
         return None
     try:
         created = datetime.strptime(name, _FMT)
     except ValueError:
         return None
-    return created, encrypted
+    return created, encrypted, partial
 
 
 def _remove_backup_path(path: Path) -> None:
@@ -259,29 +279,38 @@ def migrate_plaintext_backups(targets: list[ScanTarget]) -> int:
             parsed = _parse_backup_entry(entry)
             if parsed is None:
                 continue
-            _created, encrypted = parsed
+            _created, encrypted, _partial = parsed
             if not encrypted and entry.is_dir():
                 _encrypt_plaintext_backup(entry)
                 migrated += 1
     return migrated
 
 
-def _backup_entries(tool_dir: Path) -> list[tuple[datetime, Path, bool]]:
-    entries: list[tuple[datetime, Path, bool]] = []
+def _backup_entries(tool_dir: Path) -> list[tuple[datetime, Path, bool, bool]]:
+    entries: list[tuple[datetime, Path, bool, bool]] = []
     if not tool_dir.exists():
         return entries
     for entry in tool_dir.iterdir():
         parsed = _parse_backup_entry(entry)
         if parsed is None:
             continue
-        created, encrypted = parsed
-        entries.append((created, entry, encrypted))
+        created, encrypted, partial = parsed
+        entries.append((created, entry, encrypted, partial))
     return sorted(entries, key=lambda x: x[0])
 
 
-def backup(targets: list[ScanTarget], max_keep: int = 3) -> list[Backup]:
+def backup(
+    targets: list[ScanTarget],
+    max_keep: int = 3,
+    files: list[Path] | None = None,
+) -> list[Backup]:
     """
-    Archive and encrypt each target into BACKUP_ROOT/<tool>/<timestamp>.tar.gz.enc.
+    Archive and encrypt files before redaction.
+
+    If files is given, only those files are backed up and rollback restores
+    them without deleting unrelated files. Without files, archive the whole
+    target for backward/internal callers.
+
     Rotates: keeps only the newest max_keep per tool.
     Returns the newly-created Backup objects.
     """
@@ -289,16 +318,34 @@ def backup(targets: list[ScanTarget], max_keep: int = 3) -> list[Backup]:
     os.chmod(BACKUP_ROOT.parent, 0o700)
     ts = datetime.now().strftime(_FMT)
     created: list[Backup] = []
+    partial = files is not None
+    files_by_target: dict[ScanTarget, list[Path]] = {t: [] for t in targets}
+    if files is not None:
+        for fp in sorted(set(files)):
+            for target in targets:
+                try:
+                    fp.relative_to(target.path)
+                    files_by_target[target].append(fp)
+                    break
+                except ValueError:
+                    continue
 
     for target in targets:
+        target_files = files_by_target[target] if files is not None else None
+        if files is not None and not target_files:
+            continue
+
         tool_dir = BACKUP_ROOT / target.tool
         tool_dir.mkdir(parents=True, exist_ok=True)
-        archive = _encrypted_path(tool_dir, ts)
+        archive = _encrypted_path(tool_dir, ts, partial=partial)
 
         try:
             with tempfile.TemporaryDirectory(prefix="agentscrub_backup_") as td:
                 tar_path = Path(td) / "backup.tar.gz"
-                _tar_dir_contents(target.path, tar_path)
+                if target_files is None:
+                    _tar_dir_contents(target.path, tar_path)
+                else:
+                    _tar_files(target.path, target_files, tar_path)
                 _encrypt_file(tar_path, archive)
         except Exception as e:
             print(f"  [WARN] backup failed for {target.path}: {str(e)[:200]}", flush=True)
@@ -311,11 +358,12 @@ def backup(targets: list[ScanTarget], max_keep: int = 3) -> list[Backup]:
             display=target.display,
             created=datetime.now(),
             encrypted=True,
+            partial=partial,
         ))
 
         # Rotate: delete oldest beyond max_keep
         all_bups = _backup_entries(tool_dir)
-        for _created, old, _encrypted in all_bups[:-max_keep] if len(all_bups) > max_keep else []:
+        for _created, old, _encrypted, _partial in all_bups[:-max_keep] if len(all_bups) > max_keep else []:
             _remove_backup_path(old)
 
     return created
@@ -333,7 +381,7 @@ def list_backups(targets: list[ScanTarget]) -> list[Backup]:
         target = tool_map.get(tool)
         if target is None:
             continue
-        for created, path, encrypted in sorted(_backup_entries(tool_dir), reverse=True):
+        for created, path, encrypted, partial in sorted(_backup_entries(tool_dir), reverse=True):
             result.append(Backup(
                 path=path,
                 source=target.path,
@@ -341,6 +389,7 @@ def list_backups(targets: list[ScanTarget]) -> list[Backup]:
                 display=target.display,
                 created=created,
                 encrypted=encrypted,
+                partial=partial,
             ))
 
     return result
@@ -426,11 +475,10 @@ def rollback(b: Backup) -> tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-        r = subprocess.run(
-            ["rsync", "-a", "--checksum", "--delete",
-             *_protected_excludes(target),
-             str(src) + "/", str(b.source) + "/"],
-            capture_output=True, text=True,
-        )
+        cmd = ["rsync", "-a", "--checksum"]
+        if not b.partial:
+            cmd.append("--delete")
+        cmd.extend([*_protected_excludes(target), str(src) + "/", str(b.source) + "/"])
+        r = subprocess.run(cmd, capture_output=True, text=True)
         msg = r.stderr.strip()
         return r.returncode == 0, msg

@@ -284,7 +284,7 @@ def _write_scan_report(
         fh.write("- Proof hashes let you recognize the same secret across files without exposing it.\n")
         if preserved:
             fh.write("- Live auth/MCP credential stores are listed below but skipped by default.\n")
-        fh.write("- An encrypted backup is created before redaction; the last 3 backups are kept.\n")
+        fh.write("- An encrypted backup of files to be changed is created before redaction; the last 3 backups are kept.\n")
 
     def _write_by_tool(fh) -> None:
         if not source_file_counts:
@@ -1272,7 +1272,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     if not skip_confirm:
         p(f"\n[bold yellow]About to redact {len(actionable_redactable_secrets):,} secrets "
           f"across {len(flagged_redactable):,} files.[/bold yellow]")
-        p("[dim]An encrypted rotating backup will be created first "
+        p("[dim]An encrypted backup of changed files will be created first "
           f"(keeping last {max_backups}).[/dim]")
         try:
             ans = input("Continue? [y/N] ").strip().lower()
@@ -1287,7 +1287,16 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     from .backup import rotate_logs
     rotate_logs()
     p("\n[bold cyan]Backup[/bold cyan]")
-    for b in backup(targets, max_keep=max_backups):
+
+    _sqlite_preview_total, sqlite_preview_results = redact_sqlite(
+        redactable_secrets, targets, dry_run=True
+    )
+    sqlite_backup_files = [
+        db_path for db_path, count, _err in sqlite_preview_results if count > 0
+    ]
+    backup_files = [*flagged_redactable, *sqlite_backup_files]
+
+    for b in backup(targets, max_keep=max_backups, files=backup_files):
         p(f"  [green]✓[/green]  {b.display:<22} [dim]encrypted · {b.path}[/dim]")
 
     # ── phase 3: redact text ──────────────────────────────────────────────────

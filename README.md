@@ -187,18 +187,18 @@ agentscrub run --max-backups 10
 
 ## Backup & rollback
 
-Every live run creates an encrypted backup before touching anything. The
-encryption key is generated once at `~/.agentscrub/key` and stored with `0600`
-permissions so scheduled runs work without prompts.
+Every live run creates an encrypted backup of the files it may change before
+touching anything. The encryption key is generated once at `~/.agentscrub/key`
+and stored with `0600` permissions so scheduled runs work without prompts.
 
 ```
 ~/.agentscrub/backups/
   claude/
-    20260429-030000.tar.gz.enc    ← newest
-    20260428-030000.tar.gz.enc
-    20260427-030000.tar.gz.enc
+    20260429-030000.partial.tar.gz.enc    ← newest
+    20260428-030000.partial.tar.gz.enc
+    20260427-030000.partial.tar.gz.enc
   codex/
-    20260429-030000.tar.gz.enc
+    20260429-030000.partial.tar.gz.enc
     ...
 ```
 
