@@ -119,13 +119,7 @@ def detector_path(binary: str) -> Path | None:
     managed = BIN_DIR / binary
     if managed.exists():
         return managed
-
-    local = Path.home() / ".local" / "bin" / binary
-    if local.exists():
-        return local
-
-    found = shutil.which(binary)
-    return Path(found) if found else None
+    return None
 
 
 def _download(url: str, dest: Path) -> None:
@@ -186,7 +180,9 @@ def _extract_binary(spec: Detector, asset_path: Path, out_path: Path) -> None:
 
 def install_detector(key: str) -> Path:
     spec = _detectors()[key]
-    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    BIN_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(BIN_DIR.parent, 0o700)
+    os.chmod(BIN_DIR, 0o700)
 
     with tempfile.TemporaryDirectory(prefix="agentscrub_install_") as td:
         tmp = Path(td)
@@ -201,7 +197,7 @@ def install_detector(key: str) -> Path:
         temp_out = tmp / spec.binary
         _extract_binary(spec, asset_path, temp_out)
         shutil.move(str(temp_out), str(out_path))
-        out_path.chmod(out_path.stat().st_mode | stat.S_IXUSR)
+        out_path.chmod(0o700)
         return out_path
 
 

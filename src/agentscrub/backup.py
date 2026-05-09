@@ -214,8 +214,20 @@ def _tar_files(source: Path, files: list[Path], tar_path: Path) -> None:
 
 def _extract_tar(tar_path: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
+    dest_root = dest.resolve()
     with tarfile.open(tar_path, "r:gz") as tf:
-        tf.extractall(dest)
+        safe_members: list[tarfile.TarInfo] = []
+        for member in tf.getmembers():
+            name = member.name
+            if Path(name).is_absolute():
+                raise RuntimeError("unsafe backup archive: absolute path")
+            target = (dest / name).resolve()
+            if target != dest_root and dest_root not in target.parents:
+                raise RuntimeError("unsafe backup archive: path traversal")
+            if member.issym() or member.islnk() or member.isdev():
+                raise RuntimeError("unsafe backup archive: links and devices are not restored")
+            safe_members.append(member)
+        tf.extractall(dest, members=safe_members)
 
 
 def _encrypted_path(tool_dir: Path, ts: str, *, partial: bool = False) -> Path:

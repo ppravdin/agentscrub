@@ -1,5 +1,6 @@
 """File redaction workers and SQLite redaction. Top-level functions for multiprocessing."""
 from __future__ import annotations
+import atexit
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+from multiprocessing import util as _mp_util
 from pathlib import Path
 
 from .discover import ScanTarget
@@ -419,7 +421,17 @@ def _init_findings_worker(secrets: set[str], type_map: dict[str, str]) -> None:
         fd, path = tempfile.mkstemp(prefix="agentscrub_findings_", suffix=".txt")
         with os.fdopen(fd, "w") as fh:
             fh.write("\n".join(secrets))
+        os.chmod(path, 0o600)
         _WORKER_PATTERNS_FILE = path
+
+        def _cleanup_patterns_file(p: str = path) -> None:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+        atexit.register(_cleanup_patterns_file)
+        _mp_util.Finalize(None, _cleanup_patterns_file, exitpriority=10)
     else:
         _WORKER_PATTERNS_FILE = None
 
