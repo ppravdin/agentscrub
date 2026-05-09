@@ -33,6 +33,14 @@ WORKERS = max(1, cpu_count() - 1)
 LOG_DIR = Path.home() / ".agentscrub" / "logs"
 
 
+def _path_under(fp: Path, parent: Path) -> bool:
+    try:
+        fp.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
 def p(msg: object = "", **kw) -> None:
     if RICH:
         _CON.print(msg, **kw)
@@ -749,6 +757,21 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             try: fp.relative_to(t.path); _files_per_target_pre[t] += 1; break
             except ValueError: pass
 
+    # ── incremental cache: skip files unchanged since last clean scan ─────────
+    from .cache import filter_uncached, mark_clean, invalidate as _cache_invalidate
+    _needs_scan, _n_cached = filter_uncached(_phase1_scanned_files)
+    if not _needs_scan:
+        n_total = len(_phase1_scanned_files)
+        p(f"\n[bold green]All {n_total:,} files clean (cached) — nothing to scan.[/bold green]\n")
+        return
+    _needs_scan_set = set(_needs_scan)
+    # Targets whose files are all cached can skip the expensive detector calls.
+    _cached_targets: set = {
+        t for t in targets
+        if not any(fp in _needs_scan_set for fp in _phase1_scanned_files
+                   if _path_under(fp, t.path))
+    }
+
     # ── phase 1: detect credentials ───────────────────────────────────────────
     p("\n[bold cyan]Phase 1[/bold cyan]  [bold]Checking agent directories[/bold]")
     t1 = time.perf_counter()
@@ -788,8 +811,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         def _run_one(detector_name: str, fn) -> dict[str, str]:
             out: dict[str, str] = {}
             for target in targets:
-                result = fn(target.path)
-                out.update(result)
+                if target not in _cached_targets:
+                    result = fn(target.path)
+                    out.update(result)
                 with _t_lock:
                     _t_done_n[target.path] += 1
                     if _t_done_n[target.path] == len(_DETECTORS):
@@ -810,7 +834,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         _type_counts = _top_types(by_tool)
         _all_typed   = _all_typed_fn(by_tool)
     else:
-        all_secrets, counts = collect(targets)
+        active_targets = [t for t in targets if t not in _cached_targets]
+        all_secrets, counts = collect(active_targets)
         _all_typed: dict[str, str] = {}
         for tool, n in counts.items():
             print(f"  detector {tool:<12} {n:,}", flush=True)
@@ -856,18 +881,27 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
 
     scanned_files = sorted(set(_phase1_scanned_files + managed))
 
+    # Grep only files that aren't cached-clean; managed auth files always scanned.
+    _managed_set = set(managed)
+    _grep_files = [
+        fp for fp in scanned_files
+        if fp in _needs_scan_set or fp in _managed_set
+    ]
+    _grep_n = len(_grep_files)
+    _skip_msg = (f"[dim]scanning {_grep_n:,} files"
+                 + (f"  ·  {_n_cached:,} cached[/dim]" if _n_cached else "[/dim]"))
     if RICH:
         with Progress(
             TextColumn("  "),
             SpinnerColumn(style="yellow"),
-            TextColumn(f"[dim]scanning {len(scanned_files):,} files…[/dim]"),
+            TextColumn(_skip_msg),
             console=_CON, transient=True,
         ) as prog:
             prog.add_task("grep", total=None)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                flagged_all = ex.submit(grep_filter, all_secrets, scanned_files).result()
+                flagged_all = ex.submit(grep_filter, all_secrets, _grep_files).result()
     else:
-        flagged_all = grep_filter(all_secrets, scanned_files)
+        flagged_all = grep_filter(all_secrets, _grep_files)
 
     elapsed2 = time.perf_counter() - t2
     preserved = [fp for fp in flagged_all if is_managed_credential_file(fp)]
@@ -887,12 +921,18 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             try: fp.relative_to(t.path); flagged_per_target[t] += 1; break
             except ValueError: pass
 
+    # Mark newly confirmed clean files in the cache (grep found no secrets).
+    _flagged_set = set(flagged_all)
+    _clean_now = [fp for fp in _needs_scan if fp not in _flagged_set]
+    mark_clean(_clean_now)
+
     # ── Phase 2 timing only — the actionable per-tool table needs the
     # precision partition and runs after the report is built. ────────────────
+    _cached_suffix = f"  ·  {_n_cached:,} cached" if _n_cached else ""
     if RICH:
-        _CON.print(f"  [dim]done in {elapsed2:.1f}s[/dim]")
+        _CON.print(f"  [dim]done in {elapsed2:.1f}s{_cached_suffix}[/dim]")
     else:
-        print(f"  done in {elapsed2:.1f}s", flush=True)
+        print(f"  done in {elapsed2:.1f}s{_cached_suffix}", flush=True)
 
     # Preserved live auth/MCP files are not announced on stdout — the
     # exclude_dirs / exclude_files lists silently skip plenty of paths to
@@ -1351,6 +1391,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                     print(f"   OK   {_label(path_str)} → {count}", flush=True)
 
     p(f"  [dim]{time.perf_counter()-t3:.1f}s[/dim]")
+
+    # Invalidate redacted files from cache — mtime changes anyway, but be explicit.
+    _cache_invalidate(flagged_redactable)
 
     # Verify the files we just rewrote. If anything remains, call it a failed
     # cleanup plainly; the final scan result matters more than write counts.
