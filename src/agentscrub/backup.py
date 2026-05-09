@@ -224,8 +224,10 @@ def _extract_tar(tar_path: Path, dest: Path) -> None:
             target = (dest / name).resolve()
             if target != dest_root and dest_root not in target.parents:
                 raise RuntimeError("unsafe backup archive: path traversal")
-            if member.issym() or member.islnk() or member.isdev():
-                raise RuntimeError("unsafe backup archive: links and devices are not restored")
+            if member.isdev():
+                raise RuntimeError("unsafe backup archive: device file rejected")
+            if member.issym() or member.islnk():
+                continue  # skip symlinks — Claude Code recreates them on next run
             safe_members.append(member)
         tf.extractall(dest, members=safe_members)
 
