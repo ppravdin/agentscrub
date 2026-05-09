@@ -15,6 +15,9 @@ https://github.com/user-attachments/assets/9a770a0c-aaa1-42cd-aca8-5e7421c163ea
 
 ```bash
 # Install
+pip install agentscrub
+
+# Or, recommended for CLI tools
 pipx install agentscrub
 
 # Read-only audit — writes nothing
@@ -24,14 +27,15 @@ agentscrub scan
 # Redact in place — asks for confirmation, takes a backup first
 agentscrub run
 
-# Cron-friendly: backup + redact daily at 03:00
+# Optional: backup + redact daily at 03:00
 agentscrub schedule install
+agentscrub schedule status
 ```
 
 ## Safety model
 
 - `scan` is **read-only**. It never modifies a file. Use it to see what's exposed.
-- `run` writes a **timestamped backup** of every affected directory before touching anything. Restore with `agentscrub rollback`.
+- `run` writes an **encrypted timestamped backup** of the files it may change before touching anything. Restore with `agentscrub rollback`.
 - **Live auth and MCP credential stores are preserved by design** — files like `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, `cline_mcp_settings.json`, and the Windsurf / OpenCode / Crush / Continue config files are scanned and reported but never modified. [Full list below](#live-auth--mcp-files-preserved-scanned-reported-never-modified).
 - **Raw secrets are never printed in reports.** Each match gets a stable proof hash so you can correlate the same secret across files without exposing it.
 - All scanners run **locally**. Nothing leaves your machine.
@@ -124,11 +128,19 @@ JSON lines are parsed and secrets are replaced inside string values only, preser
 
 ## Install
 
-**Requirements:** Python ≥ 3.10, pipx, rsync
+**Requirements:** Python ≥ 3.10 and `rsync`
 
 ```bash
+# Familiar Python install
+pip install agentscrub
+
+# Recommended CLI install: isolated environment, clean upgrades/uninstall
 pipx install agentscrub
 ```
+
+On Linux, `pip install --user agentscrub` may put the command in
+`~/.local/bin`; add that directory to `PATH` if your shell cannot find
+`agentscrub`.
 
 ### Detection tools
 
@@ -168,9 +180,12 @@ agentscrub run --yes
 # Restore a previous backup
 agentscrub rollback
 
-# Set up daily 3am cron job
+# Set up daily 3am cron job, then verify the installed user crontab entry
 agentscrub schedule install
 agentscrub schedule status
+crontab -l | grep agentscrub
+
+# Remove the scheduled job
 agentscrub schedule uninstall
 
 # Scan an extra directory not in the auto-detect list
@@ -212,14 +227,28 @@ To restore:
 agentscrub rollback
 
 # Available restore points
-#   1  2026-04-29 03:00   9 tools  (today)  1.8G
-#      Claude Code, OpenAI Codex CLI, Cursor, Gemini CLI, +5 more
-#   2  2026-04-28 03:00   9 tools  (yesterday)  1.7G
+#   1  2026-04-29 03:00   3 tools  (today)  47M
+#      Claude Code, OpenAI Codex CLI, OpenCode config
+#   2  2026-04-28 03:00   9 tools  (yesterday)  348M
+#      Claude Code, Cursor, Cursor (desktop), Gemini CLI, +5 more
 #
 # Restore point # (or q to quit): 1
 ```
 
 Use `agentscrub rollback --by-tool` for advanced single-tool restores.
+
+## Scheduled cleanup
+
+`agentscrub schedule install` adds one entry to the current user's crontab:
+
+```text
+0 3 * * * agentscrub run --yes ...
+```
+
+The command verifies the entry after writing it, so a green success means
+`crontab -l` can see it. Scheduled runs write stdout/stderr logs to
+`~/.agentscrub/logs/YYYYMMDD.log`; old scan audits and cron logs are rotated
+automatically.
 
 ## What it does NOT catch
 
