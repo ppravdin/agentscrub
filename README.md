@@ -8,6 +8,28 @@ agentscrub is an open-source CLI that runs locally and scans AI coding-agent his
 
 AI tools like Claude Code, Codex CLI, Cursor, Gemini CLI, Windsurf, Cline, Continue, and others can store sensitive data locally: pasted API keys, `.env` contents, database URLs, JWTs, OAuth tokens, cloud keys, and shell output. Malware, rogue extensions, compromised packages, or anyone with local machine access can scan those logs for secrets. agentscrub reports masked findings, creates backups, and redacts leaked copies after confirmation.
 
+Example Claude Code history before cleanup, using fake values:
+
+```text
+user: I pasted the staging env for the deploy:
+      DATABASE_URL=postgres://app:fake-password@db.internal:5432/app
+      NPM_TOKEN=npm_fake_example_token_do_not_use
+
+Claude Code: The failing request used:
+             Authorization: Bearer fake.jwt.header.fake.jwt.payload.fake-signature
+```
+
+After `agentscrub run`:
+
+```text
+user: I pasted the staging env for the deploy:
+      DATABASE_URL=[REDACTED]
+      NPM_TOKEN=[REDACTED]
+
+Claude Code: The failing request used:
+             Authorization: Bearer [REDACTED]
+```
+
 https://github.com/user-attachments/assets/9a770a0c-aaa1-42cd-aca8-5e7421c163ea
 
 
