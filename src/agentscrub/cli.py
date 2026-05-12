@@ -276,13 +276,10 @@ def _write_scan_report(
 
     def _write_result(fh) -> None:
         pct = (len(flagged) / total_scanned_files * 100) if total_scanned_files else 0
-        low_conf_only = len(flagged) - flagged_redactable_count
         fh.write("\nResult\n")
         fh.write("======\n")
         fh.write(f"Files with credential-like patterns:  {len(flagged):,} / {total_scanned_files:,} ({pct:.1f}%)\n")
-        fh.write(f"  high-confidence (will be redacted):  {flagged_redactable_count:,}\n")
-        if low_conf_only:
-            fh.write(f"  low-confidence  (audit only):        {low_conf_only:,}\n")
+        fh.write(f"Files to redact:                      {flagged_redactable_count:,}\n")
         fh.write(f"Distinct secret patterns found:       {unique_patterns:,}\n")
         fh.write(f"Live auth/MCP files skipped:          {len(preserved):,}\n")
         fh.write("Files changed by this scan:           0 (read-only)\n")
