@@ -275,14 +275,15 @@ def _write_scan_report(
         fh.write("credential proof: detector type, optional shape marker, and safe hash; harmless non-credential matches may show verbatim\n")
 
     def _write_result(fh) -> None:
-        pct = (len(flagged) / total_scanned_files * 100) if total_scanned_files else 0
         fh.write("\nResult\n")
         fh.write("======\n")
-        fh.write(f"Files with credential-like patterns:  {len(flagged):,} / {total_scanned_files:,} ({pct:.1f}%)\n")
-        fh.write(f"Files to redact:                      {flagged_redactable_count:,}\n")
-        fh.write(f"Distinct secret patterns found:       {unique_patterns:,}\n")
-        fh.write(f"Live auth/MCP files skipped:          {len(preserved):,}\n")
-        fh.write("Files changed by this scan:           0 (read-only)\n")
+        fh.write(f"Files scanned:    {total_scanned_files:,}\n")
+        fh.write(f"Files to redact:  {flagged_redactable_count:,}\n")
+        if flagged_redactable_count:
+            fh.write(f"Secrets found:    {unique_patterns:,}\n")
+        if preserved:
+            fh.write(f"Live auth/MCP files skipped:  {len(preserved):,}\n")
+        fh.write("Files changed:    0 (read-only)\n")
         fh.write("\nRun next\n")
         fh.write("========\n")
         fh.write(f"agentscrub run        redact {flagged_redactable_count:,} files after confirmation\n")
