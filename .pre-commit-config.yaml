@@ -1,0 +1,19 @@
+# Install: pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.10
+    hooks:
+      - id: ruff
+        files: ^tests/
+        args: [--fix]
+      - id: ruff-format
+        files: ^tests/
+
+  - repo: local
+    hooks:
+      - id: pytest-changed
+        name: pytest (when src/tests change)
+        entry: scripts/pre-commit-pytest.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

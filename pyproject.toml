@@ -32,6 +32,15 @@ dependencies = [
     "pycparser>=2.21; platform_python_implementation != 'PyPy'",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.9.0",
+    "pre-commit>=4.0",
+    "build>=1.0",
+]
+
 [project.urls]
 Homepage   = "https://github.com/ppravdin/agentscrub"
 Repository = "https://github.com/ppravdin/agentscrub"
@@ -45,3 +54,37 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 agentscrub = ["splash.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers --cov-fail-under=65"
+markers = [
+    "needs_grep: requires grep(1) on PATH",
+]
+
+[tool.coverage.run]
+source = ["agentscrub"]
+branch = true
+omit = ["src/agentscrub/cli.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/agentscrub/cli.py" = ["E701", "E702", "E401", "F841", "F541", "B007"]
+"src/agentscrub/redact.py" = ["E402", "E741"]
+"src/agentscrub/schedule.py" = ["E741"]

@@ -29,6 +29,8 @@ MANIFEST
 coverage.xml
 *.cover
 htmlcov/
+tests/.tmp/
+tests/__pycache__/
 
 # ── Virtualenvs ────────────────────────────────────────────────
 .venv/
