@@ -219,6 +219,12 @@ agentscrub schedule uninstall
 # Scan an extra directory not in the auto-detect list
 agentscrub run --also ~/my-other-ai-tool
 
+# Fast redaction for a tiny terminal/screen text update from stdin
+printf '%s' "$terminal_update" | agentscrub redact-text
+
+# Watch/follow stdin and redact chunks as they arrive
+tail -f app.log | agentscrub watch-text --alert
+
 # Limit the run to specific tools. Repeatable or comma-separated.
 agentscrub run --only claude
 agentscrub run --only claude,codex

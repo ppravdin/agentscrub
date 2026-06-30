@@ -23,6 +23,7 @@ from agentscrub.redact import (
     is_managed_credential_file,
     partition_secrets_by_precision,
     redact_file,
+    redact_short_text,
     redact_sqlite,
     top_exposed,
 )
@@ -123,6 +124,37 @@ class TestRedactObj:
         assert n == 1
         assert REDACTED in new
         assert sample_secret not in new
+
+
+class TestRedactShortText:
+    def test_redacts_known_secret_in_terminal_line(self, sample_secret: str) -> None:
+        text = f"request failed: Authorization: Bearer {sample_secret}"
+        new, count = redact_short_text(text, {sample_secret})
+        assert count == 1
+        assert sample_secret not in new
+        assert REDACTED in new
+
+    def test_redacts_high_precision_token_without_known_secret_set(self) -> None:
+        token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+        new, count = redact_short_text(f"remote: token={token}")
+        assert count == 1
+        assert token not in new
+        assert new == f"remote: token={REDACTED}"
+
+    def test_redacts_short_multiline_terminal_update(self) -> None:
+        aws_key = "AKIAIOSFODNN7EXAMPLE"
+        text = f"line 1\nline 2\nAWS_ACCESS_KEY_ID={aws_key}\nline 4\n"
+        new, count = redact_short_text(text)
+        assert count == 1
+        assert aws_key not in new
+        assert REDACTED in new
+
+    def test_large_text_returns_unchanged(self) -> None:
+        token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+        text = ("clean\n" * 8) + token
+        new, count = redact_short_text(text)
+        assert count == 0
+        assert new == text
 
 
 class TestRedactFile:

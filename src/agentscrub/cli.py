@@ -359,7 +359,10 @@ def _write_scan_report(
 def _parse() -> tuple[str, argparse.Namespace]:
     argv = sys.argv[1:]
     subcmd = "run"
-    commands = ("scan", "run", "rollback", "doctor", "schedule")
+    commands = (
+        "scan", "run", "rollback", "doctor", "schedule",
+        "redact-text", "watch-text",
+    )
     if argv and argv[0] in commands:
         subcmd, argv = argv[0], argv[1:]
 
@@ -374,6 +377,8 @@ commands:
   rollback          restore a previous backup
   doctor            verify detection tools are installed
   schedule          manage the daily cron job
+  redact-text       redact a tiny terminal/screen text update from stdin
+  watch-text        follow stdin and redact terminal/screen text as it arrives
 
 examples:
   agentscrub scan                      see what's exposed before touching anything
@@ -381,6 +386,8 @@ examples:
   agentscrub run --yes                 redact without prompt — for cron / CI
   agentscrub rollback                  pick a restore point to restore
   agentscrub doctor                    check gitleaks / TruffleHog / Titus
+  printf 'token=ghp_...' | agentscrub redact-text
+  tail -f app.log | agentscrub watch-text --alert
   agentscrub schedule install          add daily 3am cron job
   agentscrub schedule uninstall        remove cron job
   agentscrub schedule status           show current cron entry
@@ -418,6 +425,22 @@ examples:
         ap.add_argument("action", nargs="?",
                         choices=["install", "uninstall", "status"],
                         default="status")
+
+    elif subcmd == "redact-text":
+        ap.add_argument("--count", action="store_true",
+                        help="print the number of redactions to stderr")
+
+    elif subcmd == "watch-text":
+        ap.add_argument("--alert", action="store_true",
+                        help="print an alert to stderr whenever a chunk is redacted")
+        ap.add_argument("--count", action="store_true",
+                        help="print the total number of redactions to stderr at EOF")
+        ap.add_argument("--exit-on-detect", action="store_true",
+                        help="exit with status 2 after the first detected secret")
+        ap.add_argument("--chunk-size", type=int, default=4096, metavar="N",
+                        help="stdin read size in characters (default: 4096)")
+        ap.add_argument("--max-buffer", type=int, default=8192, metavar="N",
+                        help="maximum partial-line buffer before forced redaction (default: 8192)")
 
     return subcmd, ap.parse_args(argv)
 
@@ -560,6 +583,63 @@ def cmd_schedule(action: str) -> None:
             p("\n[bold green]✓[/bold green]  Cron job removed.\n")
         else:
             p("\n[yellow]No cron job found.[/yellow]\n")
+
+
+def cmd_redact_text(ns: argparse.Namespace) -> None:
+    from .redact import redact_short_text
+
+    text = sys.stdin.read()
+    redacted, count = redact_short_text(text)
+    sys.stdout.write(redacted)
+    if getattr(ns, "count", False):
+        print(count, file=sys.stderr)
+
+
+def cmd_watch_text(ns: argparse.Namespace) -> int:
+    from .redact import redact_short_text
+
+    chunk_size = max(1, int(getattr(ns, "chunk_size", 4096)))
+    max_buffer = max(1, min(int(getattr(ns, "max_buffer", 8192)), 8192))
+    total = 0
+    pending = ""
+
+    def emit(piece: str) -> bool:
+        nonlocal total
+        if not piece:
+            return False
+        redacted, count = redact_short_text(piece)
+        sys.stdout.write(redacted)
+        sys.stdout.flush()
+        if not count:
+            return False
+        total += count
+        if getattr(ns, "alert", False):
+            print(f"agentscrub: redacted {count} secret(s)", file=sys.stderr, flush=True)
+        return True
+
+    while True:
+        chunk = sys.stdin.read(chunk_size)
+        if chunk == "":
+            break
+        pending += chunk
+        while pending:
+            newline_at = pending.find("\n")
+            if newline_at >= 0:
+                piece = pending[:newline_at + 1]
+                pending = pending[newline_at + 1:]
+            elif len(pending) >= max_buffer:
+                piece = pending[:max_buffer]
+                pending = pending[max_buffer:]
+            else:
+                break
+            if emit(piece) and getattr(ns, "exit_on_detect", False):
+                return 2
+
+    if pending and emit(pending) and getattr(ns, "exit_on_detect", False):
+        return 2
+    if getattr(ns, "count", False):
+        print(total, file=sys.stderr)
+    return 0
 
 
 # ── rollback ──────────────────────────────────────────────────────────────────
@@ -1534,6 +1614,10 @@ def main() -> int:
             cmd_schedule(getattr(ns, "action", "status"))
         elif subcmd == "rollback":
             cmd_rollback(ns)
+        elif subcmd == "redact-text":
+            cmd_redact_text(ns)
+        elif subcmd == "watch-text":
+            return cmd_watch_text(ns)
         else:
             cmd_scan_or_run(subcmd, ns)
     except KeyboardInterrupt:

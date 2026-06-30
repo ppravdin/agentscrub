@@ -4,6 +4,7 @@ import atexit
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -533,7 +534,7 @@ def _redact_obj(obj: object, secrets: frozenset[str]) -> tuple[object, int]:
     return obj, count
 
 
-def _redact_raw_line(line: str, secrets: frozenset[str]) -> tuple[str, int]:
+def _redact_raw_line(line: str, secrets: frozenset[str] | set[str]) -> tuple[str, int]:
     new, count = line, 0
     for s in secrets:
         if s in new:
@@ -541,6 +542,130 @@ def _redact_raw_line(line: str, secrets: frozenset[str]) -> tuple[str, int]:
             new = new.replace(s, REDACTED)
             count += n
     return new, count
+
+
+_SHORT_TEXT_MAX_CHARS = 8192
+_SHORT_TEXT_MAX_LINES = 8
+_SHORT_TEXT_DIRECT_REGEX_CHARS = 128
+# Literal substrings that gate the long-text (> _SHORT_TEXT_DIRECT_REGEX_CHARS)
+# fast path: if a big chunk contains none of these, skip the regex. Being
+# over-inclusive here is SAFE — a stray marker only means we run the (precise)
+# regex anyway — so we list a leading literal for every pattern below.
+_SHORT_TEXT_SECRET_MARKERS = (
+    "github_pat_",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "glpat-",
+    "sk-",
+    "sk_",
+    "pk_",
+    "rk-",
+    "rk_",
+    "GOCSPX-",
+    "npm_",
+    "xox",
+    "xapp-",
+    "hooks.slack.com",
+    "AKIA",
+    "ASIA",
+    "AIza",
+    "hf_",
+    "dop_v1_",
+    "SG.",
+    "dapi",
+    "AccountKey=",
+    "eyJ",
+    "-----BEGIN",
+)
+
+# In-process hot path for tiny terminal screen updates: redact the most-used
+# secret families before output streams anywhere (e.g. to the cloud dashboard).
+# Patterns are HIGH-PRECISION token shapes only — distinctive vendor prefixes
+# with a minimum length — so the render path stays false-positive-free. Broad
+# key=value / high-entropy heuristics belong to the full scanner/report flow
+# (gitleaks/trufflehog/titus) where matches can be reviewed before a write.
+# Specific prefixes come before generic ones so the generic alt never swallows
+# and half-redacts a more specific token.
+_SHORT_TEXT_SECRET_RE = re.compile(
+    "|".join(
+        [
+            # GitHub / GitLab personal access tokens
+            r"github_pat_[A-Za-z0-9_]{20,}",
+            r"gh[opusr]_[A-Za-z0-9_]{20,}",
+            r"glpat-[A-Za-z0-9_-]{20,}",
+            # OpenAI / Anthropic (project + classic) keys
+            r"sk-proj-[A-Za-z0-9_-]{20,}",
+            r"sk-ant-[A-Za-z0-9_-]{20,}",
+            r"sk-[A-Za-z0-9]{32,}",
+            # Stripe / Square style live|test keys (underscore delimiter)
+            r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",
+            # Google API key + OAuth client secret
+            r"AIza[0-9A-Za-z_-]{35}",
+            r"GOCSPX-[A-Za-z0-9_-]{20,}",
+            # Slack bot/app tokens + incoming webhooks
+            r"xox[baprs]-[A-Za-z0-9-]{10,}",
+            r"xapp-[0-9]-[A-Za-z0-9-]{20,}",
+            r"https://hooks\.slack\.com/services/[A-Za-z0-9/]{20,}",
+            # AWS access key id
+            r"(?:AKIA|ASIA)[A-Z0-9]{16}",
+            # npm / HuggingFace / DigitalOcean / Databricks
+            r"npm_[A-Za-z0-9]{20,}",
+            r"hf_[A-Za-z0-9]{20,}",
+            r"dop_v1_[a-f0-9]{40,}",
+            r"dapi[a-f0-9]{32,}",
+            # SendGrid
+            r"SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}",
+            # Telegram bot token
+            r"\d{8,10}:[A-Za-z0-9_-]{35}",
+            # Azure Storage connection string secret
+            r"AccountKey=[A-Za-z0-9+/=]{40,}",
+            # JSON Web Token
+            r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+            # PEM private key header (flags the block; body is multiline)
+            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+        ]
+    )
+)
+
+
+def _is_short_text(text: str) -> bool:
+    """Return true if text is small enough for per-screen-update redaction."""
+    if len(text) > _SHORT_TEXT_MAX_CHARS:
+        return False
+    # str.count is faster than splitlines and lets exactly N lines through.
+    return text.count("\n") < _SHORT_TEXT_MAX_LINES
+
+
+def redact_short_text(
+    text: str,
+    secrets: frozenset[str] | set[str] | None = None,
+) -> tuple[str, int]:
+    """Redact a tiny terminal/screen text update without spawning scanners.
+
+    This is intended for a line or a handful of terminal-output lines in a hot
+    render path. It does exact replacement for already-known secrets, then a
+    bounded set of high-precision token regexes. Larger text returns unchanged;
+    callers should send large buffers through the normal scan/redact pipeline.
+    """
+    if not text or not _is_short_text(text):
+        return text, 0
+
+    count = 0
+    new = text
+    if secrets:
+        new, count = _redact_raw_line(new, secrets)
+
+    if (
+        len(new) > _SHORT_TEXT_DIRECT_REGEX_CHARS
+        and not any(marker in new for marker in _SHORT_TEXT_SECRET_MARKERS)
+    ):
+        return new, count
+
+    new, regex_count = _SHORT_TEXT_SECRET_RE.subn(REDACTED, new)
+    return new, count + regex_count
 
 
 def redact_file(args: tuple) -> tuple[str, int, str | None]:
