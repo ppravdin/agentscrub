@@ -131,10 +131,21 @@ class RampartPiiDetector:
 
     def _normalize(self, text: str) -> str:
         """Match the runtime normalization: lowercase, NFKD, strip combining marks."""
-        return "".join(
-            c for c in unicodedata.normalize("NFKD", text.lower())
-            if unicodedata.category(c) != "Mn"
-        )
+        return self._normalize_with_map(text)[0]
+
+    @staticmethod
+    def _normalize_with_map(text: str) -> tuple[str, list[int]]:
+        """Return normalized text plus original index for every normalized char."""
+        normalized: list[str] = []
+        offsets: list[int] = []
+        for original_index, char in enumerate(text):
+            piece = "".join(
+                c for c in unicodedata.normalize("NFKD", char.lower())
+                if unicodedata.category(c) != "Mn"
+            )
+            normalized.append(piece)
+            offsets.extend([original_index] * len(piece))
+        return "".join(normalized), offsets
 
     def _detect_deterministic(self, text: str) -> list[Span]:
         """High-recall regex recognizers for structured PII."""
@@ -150,7 +161,10 @@ class RampartPiiDetector:
         for m in re.finditer(
             r"https?://[^\s\"'<>]+|ftp://[^\s\"'<>]+", text
         ):
-            spans.append(Span("URL", m.start(), m.end(), m.group()))
+            value = m.group().rstrip(".,;:!?]")
+            while value.endswith(")") and value.count("(") < value.count(")"):
+                value = value[:-1]
+            spans.append(Span("URL", m.start(), m.start() + len(value), value))
 
         # IPv4 / IPv6 / MAC (simplified; good enough for typical logs).
         for m in re.finditer(
@@ -195,129 +209,117 @@ class RampartPiiDetector:
         self._ensure_loaded()
         assert self._tokenizer is not None and self._session is not None
 
-        normalized = self._normalize(text)
+        if not text:
+            return []
+        normalized, normalized_to_original = self._normalize_with_map(text)
         enc = self._tokenizer(
             normalized,
             return_tensors="np",
             truncation=True,
             max_length=512,
+            stride=64,
+            padding="max_length",
+            return_overflowing_tokens=True,
             return_offsets_mapping=True,
             return_special_tokens_mask=True,
         )
 
-        inputs = {
-            "input_ids": enc["input_ids"].astype(np.int64),
-            "attention_mask": enc["attention_mask"].astype(np.int64),
-        }
-        if "token_type_ids" in enc:
-            inputs["token_type_ids"] = enc["token_type_ids"].astype(np.int64)
-
-        outputs = self._session.run(None, inputs)
-        logits = outputs[0][0]  # (seq_len, num_labels)
-        label_ids = np.argmax(logits, axis=-1)
-        scores = np.max(logits, axis=-1)
-
-        offsets = enc["offset_mapping"][0]
-        special_mask = enc["special_tokens_mask"][0]
-
         spans: list[Span] = []
-        current_label: str | None = None
-        current_start: int | None = None
-        current_end: int | None = None
-        current_score_sum = 0.0
-        current_count = 0
+        window_count = enc["input_ids"].shape[0]
+        for window_index in range(window_count):
+            inputs = {
+                "input_ids": enc["input_ids"][window_index:window_index + 1].astype(np.int64),
+                "attention_mask": enc["attention_mask"][window_index:window_index + 1].astype(np.int64),
+            }
+            if "token_type_ids" in enc:
+                inputs["token_type_ids"] = enc["token_type_ids"][window_index:window_index + 1].astype(np.int64)
 
-        for i, (lid, offset, is_special) in enumerate(
-            zip(label_ids, offsets, special_mask, strict=True)
-        ):
-            if is_special:
-                continue
-            label = self._id2label.get(int(lid), "O")
-            if label == "O" or float(scores[i]) < self.min_score:
-                if current_label is not None:
-                    spans.append(
-                        Span(
-                            current_label,
-                            current_start or 0,
-                            current_end or 0,
-                            normalized[current_start:current_end],
-                            current_score_sum / current_count,
-                        )
-                    )
-                    current_label = None
-                continue
+            outputs = self._session.run(None, inputs)
+            logits = outputs[0][0]  # (seq_len, num_labels)
+            logits -= np.max(logits, axis=-1, keepdims=True)
+            probabilities = np.exp(logits)
+            probabilities /= np.sum(probabilities, axis=-1, keepdims=True)
+            label_ids = np.argmax(probabilities, axis=-1)
+            scores = np.max(probabilities, axis=-1)
+            offsets = enc["offset_mapping"][window_index]
+            special_mask = enc["special_tokens_mask"][window_index]
 
-            bio, entity = label.split("-", 1)
-            start, end = int(offset[0]), int(offset[1])
-            if bio == "B" or entity != current_label:
-                if current_label is not None:
-                    spans.append(
-                        Span(
-                            current_label,
-                            current_start or 0,
-                            current_end or 0,
-                            normalized[current_start:current_end],
-                            current_score_sum / current_count,
-                        )
-                    )
-                current_label = entity
-                current_start = start
-                current_end = end
-                current_score_sum = float(scores[i])
-                current_count = 1
-            else:
-                current_end = end
-                current_score_sum += float(scores[i])
-                current_count += 1
+            current_label: str | None = None
+            current_start: int | None = None
+            current_end: int | None = None
+            current_score_sum = 0.0
+            current_count = 0
 
-        if current_label is not None:
-            spans.append(
-                Span(
-                    current_label,
-                    current_start or 0,
-                    current_end or 0,
-                    normalized[current_start:current_end],
-                    current_score_sum / current_count,
-                )
-            )
+            def flush() -> None:
+                nonlocal current_label, current_start, current_end
+                nonlocal current_score_sum, current_count
+                if current_label is None or current_start is None or current_end is None:
+                    return
+                if current_end > current_start:
+                    spans.append(Span(
+                        current_label,
+                        current_start,
+                        current_end,
+                        normalized[current_start:current_end],
+                        current_score_sum / current_count,
+                    ))
+                current_label = None
+                current_start = None
+                current_end = None
+                current_score_sum = 0.0
+                current_count = 0
+
+            for i, (lid, offset, is_special) in enumerate(
+                zip(label_ids, offsets, special_mask, strict=True)
+            ):
+                if is_special:
+                    flush()
+                    continue
+                label = self._id2label.get(int(lid), "O")
+                if label == "O" or "-" not in label or float(scores[i]) < self.min_score:
+                    flush()
+                    continue
+
+                bio, entity = label.split("-", 1)
+                start, end = int(offset[0]), int(offset[1])
+                if end <= start:
+                    continue
+                if bio == "B" or entity != current_label:
+                    flush()
+                    current_label = entity
+                    current_start = start
+                    current_end = end
+                    current_score_sum = float(scores[i])
+                    current_count = 1
+                else:
+                    current_end = end
+                    current_score_sum += float(scores[i])
+                    current_count += 1
+            flush()
 
         # Map normalized offsets back to original text offsets.
         result: list[Span] = []
         for span in spans:
-            orig_start = self._map_offset(text, normalized, span.start)
-            orig_end = self._map_offset(text, normalized, span.end)
+            orig_start = self._map_offset(text, normalized, span.start, normalized_to_original)
+            orig_end = self._map_offset(text, normalized, span.end, normalized_to_original)
             result.append(Span(span.label, orig_start, orig_end, text[orig_start:orig_end], span.score))
         return result
 
     @staticmethod
-    def _map_offset(original: str, normalized: str, norm_index: int) -> int:
+    def _map_offset(
+        original: str,
+        normalized: str,
+        norm_index: int,
+        normalized_to_original: list[int] | None = None,
+    ) -> int:
         """Best-effort map from a normalized-string offset to the original string."""
         if norm_index <= 0:
             return 0
         if norm_index >= len(normalized):
             return len(original)
-        # Walk both strings; normalized is a substring-like transformation of original.
-        oi = 0
-        ni = 0
-        while oi < len(original) and ni < norm_index:
-            oc = original[oi]
-            nc = normalized[ni]
-            lower = oc.lower()
-            # Skip combining marks in original.
-            if unicodedata.category(oc) == "Mn":
-                oi += 1
-                continue
-            # NFKD can expand characters; consume original chars until we match.
-            if lower == nc:
-                oi += 1
-                ni += 1
-            elif lower.startswith(nc):
-                # e.g. æ -> ae; advance normalized by 1, original by 1 for now.
-                oi += 1
-                ni += 1
-            else:
-                oi += 1
-        return min(oi, len(original))
+        if normalized_to_original is None:
+            _, normalized_to_original = RampartPiiDetector._normalize_with_map(original)
+        return normalized_to_original[norm_index]
 
     def detect(self, text: str) -> list[Span]:
         """Return all PII spans in `text`."""
@@ -337,13 +339,25 @@ class RampartPiiDetector:
             ):
                 spans.append(ms)
 
-        spans.sort(key=lambda s: (s.start, -s.end))
-        # Remove exact duplicates and fully-contained overlaps.
+        # Deterministic recognizers win over model windows, then keep only one
+        # span for overlapping model-window predictions.
+        spans.sort(key=lambda s: (s.start, -(s.end - s.start)))
+        deterministic_ids = {id(s) for s in det_spans}
+        ordered = sorted(
+            spans,
+            key=lambda s: (
+                0 if id(s) in deterministic_ids else 1,
+                s.start,
+                -(s.end - s.start),
+                -s.score,
+            ),
+        )
         filtered: list[Span] = []
-        for s in spans:
-            if filtered and filtered[-1].start == s.start and filtered[-1].end >= s.end:
+        for s in ordered:
+            if any(existing.start < s.end and existing.end > s.start for existing in filtered):
                 continue
             filtered.append(s)
+        filtered.sort(key=lambda s: (s.start, s.end))
         return filtered
 
     def _placeholder_for(self, label: str, value: str) -> str:
@@ -367,15 +381,9 @@ class RampartPiiDetector:
         return ScrubResult(out, placeholders, spans)
 
     def proof(self, span: Span) -> str:
-        """Safe one-line summary of a span for reports."""
+        """Safe one-line summary of a span without exposing its value."""
         h = hashlib.sha256(span.text.encode()).hexdigest()[:8]
-        n = len(span.text)
-        if n < 8:
-            return f"{span.label} · #{h}"
-        head, tail = (4, 2) if n >= 20 else (3, 1)
-        preview = f"{span.text[:head]}…{span.text[-tail:]}"
-        preview = "".join(c if c.isprintable() else "·" for c in preview)
-        return f"{span.label} · {preview} · #{h}"
+        return f"{span.label} · #{h}"
 
 
 # Convenience module-level singleton for quick use.

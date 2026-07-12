@@ -638,8 +638,10 @@ def cmd_pii_detect(ns: argparse.Namespace) -> int:
 
     text = sys.stdin.read()
     spans = detect_pii(text)
+    import hashlib
     for span in spans:
-        p(f"{span.label:<20} {span.start:>6}:{span.end:<6} {span.text[:60]}")
+        proof = hashlib.sha256(span.text.encode()).hexdigest()[:8]
+        p(f"{span.label:<20} {span.start:>6}:{span.end:<6} #{proof}")
     if getattr(ns, "count", False):
         print(len(spans), file=sys.stderr)
     return 0 if not spans else 2

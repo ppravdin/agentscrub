@@ -164,6 +164,9 @@ pip install agentscrub
 
 # Recommended CLI install: isolated environment, clean upgrades/uninstall
 pipx install agentscrub
+
+# Optional PII model and structured personal-data redaction
+pipx inject agentscrub onnxruntime transformers huggingface-hub numpy
 ```
 
 On Linux, `pip install --user agentscrub` may put the command in

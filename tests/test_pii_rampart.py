@@ -1,7 +1,11 @@
 """Tests for the Rampart PII Python wrapper."""
 import pytest
 
-from agentscrub.pii_rampart import KEEP_LABELS, RampartPiiDetector
+pytest.importorskip("onnxruntime")
+pytest.importorskip("transformers")
+pytest.importorskip("huggingface_hub")
+
+from agentscrub.pii_rampart import KEEP_LABELS, RampartPiiDetector, Span
 
 
 @pytest.fixture(scope="module")
@@ -71,3 +75,27 @@ def test_stable_placeholders_across_calls(detector: RampartPiiDetector) -> None:
 
 def test_keep_labels_default() -> None:
     assert KEEP_LABELS == {"CITY", "STATE", "ZIP_CODE"}
+
+
+def test_unicode_normalization_preserves_offsets() -> None:
+    detector = RampartPiiDetector()
+    original = "Mi nombre es José García."
+    normalized, mapping = detector._normalize_with_map(original)
+    assert normalized == "mi nombre es jose garcia."
+    assert detector._map_offset(original, normalized, 13, mapping) == 13
+
+
+def test_url_span_excludes_sentence_punctuation() -> None:
+    detector = RampartPiiDetector()
+    spans = detector._detect_deterministic("Visit https://example.com/profile.")
+    assert [(span.label, span.text) for span in spans] == [
+        ("URL", "https://example.com/profile")
+    ]
+
+
+def test_proof_does_not_expose_pii() -> None:
+    detector = RampartPiiDetector()
+    span = Span("EMAIL", 0, 21, "alex@example.com")
+    proof = detector.proof(span)
+    assert span.text not in proof
+    assert "#" in proof
