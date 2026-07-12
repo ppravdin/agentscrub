@@ -366,7 +366,7 @@ def _parse() -> tuple[str, argparse.Namespace]:
     subcmd = "run"
     commands = (
         "scan", "run", "rollback", "doctor", "schedule",
-        "redact-text", "watch-text",
+        "redact-text", "watch-text", "pii-text", "pii-detect",
     )
     if argv and argv[0] in commands:
         subcmd, argv = argv[0], argv[1:]
@@ -384,6 +384,8 @@ commands:
   schedule          manage the daily cron job
   redact-text       redact a tiny terminal/screen text update from stdin
   watch-text        follow stdin and redact terminal/screen text as it arrives
+  pii-text          redact personal information (names, addresses, SSNs, etc.) from stdin
+  pii-detect        show what personal information Rampart finds in stdin
 
 examples:
   agentscrub scan                      see what's exposed before touching anything
@@ -446,6 +448,14 @@ examples:
                         help="stdin read size in characters (default: 4096)")
         ap.add_argument("--max-buffer", type=int, default=8192, metavar="N",
                         help="maximum partial-line buffer before forced redaction (default: 8192)")
+
+    elif subcmd == "pii-text":
+        ap.add_argument("--count", action="store_true",
+                        help="print the number of redactions to stderr")
+
+    elif subcmd == "pii-detect":
+        ap.add_argument("--count", action="store_true",
+                        help="print the number of findings to stderr")
 
     return subcmd, ap.parse_args(argv)
 
@@ -600,6 +610,39 @@ def cmd_redact_text(ns: argparse.Namespace) -> None:
     sys.stdout.write(redacted)
     if getattr(ns, "count", False):
         print(count, file=sys.stderr)
+
+
+def cmd_pii_text(ns: argparse.Namespace) -> int:
+    try:
+        from .pii_rampart import redact_pii
+    except Exception as e:
+        p(f"[red]PII dependencies not installed: {e}[/red]")
+        p("[dim]Install with: pip install 'agentscrub[pii]'[/dim]")
+        return 1
+
+    text = sys.stdin.read()
+    result = redact_pii(text)
+    sys.stdout.write(result.text)
+    if getattr(ns, "count", False):
+        print(len(result.spans), file=sys.stderr)
+    return 0 if not result.spans else 2
+
+
+def cmd_pii_detect(ns: argparse.Namespace) -> int:
+    try:
+        from .pii_rampart import detect_pii
+    except Exception as e:
+        p(f"[red]PII dependencies not installed: {e}[/red]")
+        p("[dim]Install with: pip install 'agentscrub[pii]'[/dim]")
+        return 1
+
+    text = sys.stdin.read()
+    spans = detect_pii(text)
+    for span in spans:
+        p(f"{span.label:<20} {span.start:>6}:{span.end:<6} {span.text[:60]}")
+    if getattr(ns, "count", False):
+        print(len(spans), file=sys.stderr)
+    return 0 if not spans else 2
 
 
 def cmd_watch_text(ns: argparse.Namespace) -> int:
@@ -1627,6 +1670,10 @@ def main() -> int:
             cmd_redact_text(ns)
         elif subcmd == "watch-text":
             return cmd_watch_text(ns)
+        elif subcmd == "pii-text":
+            return cmd_pii_text(ns)
+        elif subcmd == "pii-detect":
+            return cmd_pii_detect(ns)
         else:
             cmd_scan_or_run(subcmd, ns)
     except KeyboardInterrupt:
