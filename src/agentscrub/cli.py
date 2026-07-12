@@ -1,26 +1,31 @@
 """agentscrub — scrub secrets from AI session logs."""
 from __future__ import annotations
+
 import argparse
 import concurrent.futures
-from datetime import datetime
 import re
 import sys
 import time
+from datetime import datetime
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 try:
+    from rich import box
     from rich.console import Console
     from rich.live import Live
-    from rich.spinner import Spinner
-    from rich.progress import (
-        Progress, BarColumn, MofNCompleteColumn, TimeElapsedColumn,
-        TextColumn, SpinnerColumn,
-    )
-    from rich.table import Table
-    from rich.panel import Panel
     from rich.markup import escape as _rich_escape
-    from rich import box
+    from rich.panel import Panel
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+    from rich.spinner import Spinner
+    from rich.table import Table
     _CON = Console(highlight=False)
     RICH = True
 except ImportError:
@@ -478,8 +483,10 @@ def _print_splash() -> None:
 # ── doctor ────────────────────────────────────────────────────────────────────
 
 def cmd_doctor() -> None:
-    import shutil, subprocess
-    from .secrets import GITLEAKS, TRUFFLEHOG, TITUS
+    import shutil
+    import subprocess
+
+    from .secrets import GITLEAKS, TITUS, TRUFFLEHOG
 
     _print_splash()
     p(f"  [dim]{_ver()}[/dim]\n")
@@ -645,8 +652,8 @@ def cmd_watch_text(ns: argparse.Namespace) -> int:
 # ── rollback ──────────────────────────────────────────────────────────────────
 
 def cmd_rollback(ns: argparse.Namespace) -> None:
-    from .discover import discover
     from .backup import list_backups, list_restore_points, rollback
+    from .discover import discover
 
     targets = discover()
     if not targets:
@@ -742,12 +749,11 @@ def cmd_rollback(ns: argparse.Namespace) -> None:
 # ── scan & run ────────────────────────────────────────────────────────────────
 
 def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
+    from .backup import backup
     from .discover import discover
-    from .secrets import collect
     from .redact import (
         collect_files,
         collect_managed_credential_files,
-        file_findings,
         grep_filter,
         is_high_precision_label,
         is_managed_credential_file,
@@ -755,9 +761,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         redact_file,
         redact_sqlite,
         top_exposed,
-        _short_label,
     )
-    from .backup import backup
 
     dry_run      = subcmd == "scan"
     skip_confirm = getattr(ns, "yes", False)
@@ -841,7 +845,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             except ValueError: pass
 
     # ── incremental cache: skip files unchanged since last clean scan ─────────
-    from .cache import filter_uncached, mark_clean, invalidate as _cache_invalidate
+    from .cache import filter_uncached, mark_clean
+    from .cache import invalidate as _cache_invalidate
     _needs_scan, _n_cached = filter_uncached(_phase1_scanned_files)
     if not _needs_scan:
         n_total = len(_phase1_scanned_files)
@@ -867,8 +872,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     t1 = time.perf_counter()
 
     if RICH:
-        from .secrets import _gitleaks, _trufflehog, _titus, _run_on_files
         import threading as _threading
+
+        from .secrets import _gitleaks, _run_on_files, _titus, _trufflehog
         _DETECTORS = ("gitleaks", "trufflehog", "titus")
         _fns       = {"gitleaks": _gitleaks, "trufflehog": _trufflehog, "titus": _titus}
         _sp        = Spinner("dots", style="yellow")
@@ -937,12 +943,15 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                        for s in sdict if len(s) >= 8 and not s.isspace()}
         counts = {t: len(d) for t, d in by_tool.items()}
 
-        from .secrets import top_types as _top_types, all_typed as _all_typed_fn
+        from .secrets import all_typed as _all_typed_fn
+        from .secrets import top_types as _top_types
         _type_counts = _top_types(by_tool)
         _all_typed   = _all_typed_fn(by_tool)
     else:
-        from .secrets import _run_on_files as _rof, _gitleaks, _trufflehog, _titus
         import concurrent.futures as _cf
+
+        from .secrets import _gitleaks, _titus, _trufflehog
+        from .secrets import _run_on_files as _rof
         active_targets = [t for t in targets if t not in _cached_targets]
         _all_uncached = [fp for t in active_targets
                          for fp in _needs_scan if _path_under(fp, t.path)]
@@ -1071,7 +1080,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     findings_by_file: dict[Path, list[dict[str, object]]] = {}
     full_report_path: Path | None = None
     if flagged or preserved:
-        from .redact import file_findings_worker, _init_findings_worker
+        from .redact import _init_findings_worker, file_findings_worker
 
         # Sort largest-first so the longest-running files start at t=0 and the
         # tail of the queue is small files. Otherwise the bar reaches
