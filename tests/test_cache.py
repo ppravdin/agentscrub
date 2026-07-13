@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -30,6 +31,20 @@ class TestFileCache:
 
         time.sleep(0.05)
         fp.write_text('{"changed":true}\n')
+
+        needs, skipped = cache.filter_uncached([fp])
+        assert fp in needs
+        assert skipped == 0
+
+    def test_same_metadata_but_changed_content_invalidates(
+        self, agentscrub_paths: Path, tmp_path: Path
+    ) -> None:
+        fp = tmp_path / "same-stat.jsonl"
+        fp.write_text("AAAA\n")
+        cache.mark_clean([fp])
+        st = fp.stat()
+        fp.write_text("BBBB\n")
+        os.utime(fp, ns=(st.st_atime_ns, st.st_mtime_ns))
 
         needs, skipped = cache.filter_uncached([fp])
         assert fp in needs

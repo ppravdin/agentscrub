@@ -1,4 +1,5 @@
 """Tests for the Rampart PII Python wrapper."""
+
 import pytest
 
 pytest.importorskip("onnxruntime")
@@ -88,9 +89,7 @@ def test_unicode_normalization_preserves_offsets() -> None:
 def test_url_span_excludes_sentence_punctuation() -> None:
     detector = RampartPiiDetector()
     spans = detector._detect_deterministic("Visit https://example.com/profile.")
-    assert [(span.label, span.text) for span in spans] == [
-        ("URL", "https://example.com/profile")
-    ]
+    assert [(span.label, span.text) for span in spans] == [("URL", "https://example.com/profile")]
 
 
 def test_proof_does_not_expose_pii() -> None:

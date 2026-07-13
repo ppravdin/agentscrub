@@ -1,12 +1,15 @@
 """File redaction workers and SQLite redaction. Top-level functions for multiprocessing."""
 from __future__ import annotations
+
 import atexit
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import tempfile
 from multiprocessing import util as _mp_util
@@ -160,6 +163,13 @@ def collect_files(targets: list[ScanTarget]) -> list[Path]:
     for target in targets:
         for p in target.path.rglob("*"):
             if not p.is_file() or p.suffix in BINARY_EXTS:
+                continue
+            try:
+                sample = p.read_bytes()[:4096]
+                if b"\x00" in sample:
+                    continue
+                sample.decode("utf-8")
+            except (OSError, UnicodeDecodeError):
                 continue
             if target.excluded_by_dir(p):
                 continue
@@ -630,6 +640,41 @@ _SHORT_TEXT_SECRET_RE = re.compile(
     )
 )
 
+_HIGH_ENTROPY_CANDIDATE_RE = re.compile(
+    r"(?<![A-Za-z0-9_@+/.-])"
+    r"[A-Za-z0-9][A-Za-z0-9_@+/.-]{30,}[A-Za-z0-9]={0,2}"
+    r"(?![A-Za-z0-9_@+/.-])"
+)
+
+
+def _looks_high_entropy(value: str) -> bool:
+    """Return true for long, varied token-like strings, not normal prose."""
+    if len(value) < 32:
+        return False
+    counts: dict[str, int] = {}
+    for char in value:
+        counts[char] = counts.get(char, 0) + 1
+    if len(counts) < 12 or len(counts) / len(value) < 0.35:
+        return False
+    entropy = -sum(
+        (count / len(value)) * math.log2(count / len(value))
+        for count in counts.values()
+    )
+    return entropy >= 4.0
+
+
+def _high_entropy_subn(text: str) -> tuple[str, int]:
+    count = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal count
+        if not _looks_high_entropy(match.group()):
+            return match.group()
+        count += 1
+        return REDACTED
+
+    return _HIGH_ENTROPY_CANDIDATE_RE.sub(replace, text), count
+
 
 def _is_short_text(text: str) -> bool:
     """Return true if text is small enough for per-screen-update redaction."""
@@ -642,6 +687,8 @@ def _is_short_text(text: str) -> bool:
 def redact_short_text(
     text: str,
     secrets: frozenset[str] | set[str] | None = None,
+    *,
+    high_entropy: bool = False,
 ) -> tuple[str, int]:
     """Redact a tiny terminal/screen text update without spawning scanners.
 
@@ -665,7 +712,61 @@ def redact_short_text(
         return new, count
 
     new, regex_count = _SHORT_TEXT_SECRET_RE.subn(REDACTED, new)
-    return new, count + regex_count
+    count += regex_count
+    if high_entropy:
+        new, entropy_count = _high_entropy_subn(new)
+        count += entropy_count
+    return new, count
+
+
+def redact_short_text_prefix(
+    text: str, prefix_len: int, *, high_entropy: bool = False
+) -> tuple[str, int, int]:
+    """Redact a safe prefix while retaining matches that cross its boundary.
+
+    This is used by the streaming watcher when a long, newline-free input must
+    be flushed. The returned consumed length can be smaller than ``prefix_len``
+    when a token begins in the prefix and ends in the retained suffix.
+    """
+    prefix_len = max(0, min(prefix_len, len(text)))
+    if not text or not prefix_len:
+        return "", 0, 0
+
+    if (
+        len(text) > _SHORT_TEXT_DIRECT_REGEX_CHARS
+        and not any(marker in text for marker in _SHORT_TEXT_SECRET_MARKERS)
+    ):
+        return text[:prefix_len], prefix_len, 0
+
+    matches = list(_SHORT_TEXT_SECRET_RE.finditer(text))
+    if high_entropy:
+        matches.extend(
+            match for match in _HIGH_ENTROPY_CANDIDATE_RE.finditer(text)
+            if _looks_high_entropy(match.group())
+        )
+    matches.sort(key=lambda match: (match.start(), -(match.end() - match.start())))
+    non_overlapping: list[re.Match[str]] = []
+    for match in matches:
+        if not non_overlapping or match.start() >= non_overlapping[-1].end():
+            non_overlapping.append(match)
+    matches = non_overlapping
+    safe_end = prefix_len
+    for match in matches:
+        if match.start() < prefix_len < match.end():
+            safe_end = min(safe_end, match.start())
+
+    out: list[str] = []
+    cursor = 0
+    count = 0
+    for match in matches:
+        if match.end() > safe_end:
+            break
+        out.append(text[cursor:match.start()])
+        out.append(REDACTED)
+        cursor = match.end()
+        count += 1
+    out.append(text[cursor:safe_end])
+    return "".join(out), safe_end, count
 
 
 def redact_file(args: tuple) -> tuple[str, int, str | None]:
@@ -673,8 +774,9 @@ def redact_file(args: tuple) -> tuple[str, int, str | None]:
     path_str, secrets, dry_run = args
     path = Path(path_str)
     try:
+        original_mode = stat.S_IMODE(path.stat().st_mode)
         lines_out, total = [], 0
-        for line in path.read_text(errors="ignore").splitlines(keepends=True):
+        for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
             stripped = line.rstrip("\n")
             if not stripped.strip() or not any(s in stripped for s in secrets):
                 lines_out.append(line)
@@ -699,7 +801,8 @@ def redact_file(args: tuple) -> tuple[str, int, str | None]:
         if not dry_run:
             suffix = path.suffix or ".tmp"
             tmp = path.with_suffix(suffix + ".agentscrub_tmp")
-            tmp.write_text("".join(lines_out))
+            tmp.write_text("".join(lines_out), encoding="utf-8")
+            os.chmod(tmp, original_mode)
             shutil.move(str(tmp), str(path))
         return path_str, total, None
     except Exception as e:

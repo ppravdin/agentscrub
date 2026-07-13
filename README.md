@@ -1,6 +1,6 @@
 # agentscrub
 
-![agentscrub scans local AI agent logs for leaked secrets](https://raw.githubusercontent.com/ppravdin/agentscrub/v1.1.31/assets/cover.png)
+![agentscrub scans local AI agent logs for leaked secrets](https://raw.githubusercontent.com/ppravdin/agentscrub/v1.1.32/assets/cover.png)
 
 **Find and redact leaked secrets in local AI coding-agent logs.**
 
@@ -228,6 +228,18 @@ printf '%s' "$terminal_update" | agentscrub redact-text
 # Watch/follow stdin and redact chunks as they arrive
 tail -f app.log | agentscrub watch-text --alert
 
+# Opt in to heuristic detection of unknown high-entropy token-like strings
+printf '%s' "$terminal_update" | agentscrub redact-text --entropy
+tail -f app.log | agentscrub watch-text --entropy --alert
+
+# Redact personal information from finite stdin (optional PII extra)
+printf 'Contact Maria Garcia at maria@example.com, SSN 123-45-6789' \
+  | agentscrub pii-text
+
+# List detected PII without printing the matched values
+printf 'Contact Maria Garcia at maria@example.com' \
+  | agentscrub pii-detect --count
+
 # Limit the run to specific tools. Repeatable or comma-separated.
 agentscrub run --only claude
 agentscrub run --only claude,codex
@@ -236,6 +248,56 @@ agentscrub --list-tools             # show every known tool ID
 # Keep more backups (default: 3)
 agentscrub run --max-backups 10
 ```
+
+`watch-text` is the lightweight streaming path for secret and credential
+patterns. It reads stdin in chunks, emits redacted text immediately, and does
+not load the PII model. Add `--entropy` to also catch long, varied
+token-shaped strings without known vendor prefixes. This is intentionally
+opt-in: hashes, IDs, and some ordinary generated values can look like secrets.
+It is not enabled by the scheduled `run`; that path remains detector-based.
+Use `pii-text` for a finite text input when names,
+addresses, phone numbers, government IDs, or other personal data also need to
+be redacted.
+
+For a text file, use the watcher as a streaming detector. With
+`--exit-on-detect`, status `2` means a match was redacted and status `0` means
+no match was found:
+
+```bash
+agentscrub watch-text --entropy --exit-on-detect < output.log >/dev/null
+```
+
+Binary files are not safely redacted in place. To inspect printable strings
+inside one, pass them through `strings` first:
+
+```bash
+strings -a -n 32 artifact.bin \
+  | agentscrub watch-text --entropy --exit-on-detect >/dev/null
+```
+
+This checks printable content only; it is not proof that arbitrary binary
+bytes contain no secret.
+
+### Optional PII detection
+
+The PII commands use the local Rampart ONNX model and are separate from the
+standard secret-only `scan` and `run` commands. Install the optional
+dependencies with:
+
+```bash
+# pip / virtualenv
+pip install 'agentscrub[pii]'
+
+# pipx
+pipx inject agentscrub onnxruntime transformers huggingface-hub numpy
+```
+
+The model is downloaded from Hugging Face on first use, then loaded from the
+local cache. No input text is sent to a remote service. `pii-text` replaces
+detected values with stable labels such as `[GIVEN_NAME_1]` and `[EMAIL_1]`;
+`pii-detect` prints labels, offsets, and short proof hashes rather than the
+matched values. Both commands read stdin and write the transformed or
+diagnostic output to stdout.
 
 ## Backup & rollback
 
@@ -294,7 +356,7 @@ automatically.
 | Plain prose passwords (`my password is hunter2`) | No pattern; indistinguishable from normal text |
 | Short secrets < 8 chars | Below minimum length for all three tools |
 | Secrets in binary files | Skipped by design |
-| PII (names, phones, addresses) | Out of scope; agentscrub targets credentials and secret-like patterns |
+| PII in ordinary scan/run logs | Not included in the standard secret-only scan; use `pii-text` or `pii-detect` with the optional PII extra |
 
 ## Adding a new AI tool
 

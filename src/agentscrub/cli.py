@@ -394,7 +394,14 @@ examples:
   agentscrub rollback                  pick a restore point to restore
   agentscrub doctor                    check gitleaks / TruffleHog / Titus
   printf 'token=ghp_...' | agentscrub redact-text
+  printf 'token=generated...' | agentscrub redact-text --entropy
   tail -f app.log | agentscrub watch-text --alert
+  tail -f app.log | agentscrub watch-text --entropy --alert
+  --entropy is stream-only; scheduled run remains detector-based
+  pip install 'agentscrub[pii]'       install optional PII support
+  pipx inject agentscrub onnxruntime transformers huggingface-hub numpy
+                                      install PII support into pipx
+  PII uses Rampart; its public Hugging Face model is cached on first use
   agentscrub schedule install          add daily 3am cron job
   agentscrub schedule uninstall        remove cron job
   agentscrub schedule status           show current cron entry
@@ -436,6 +443,8 @@ examples:
     elif subcmd == "redact-text":
         ap.add_argument("--count", action="store_true",
                         help="print the number of redactions to stderr")
+        ap.add_argument("--entropy", action="store_true",
+                        help="also redact long high-entropy token-like strings")
 
     elif subcmd == "watch-text":
         ap.add_argument("--alert", action="store_true",
@@ -448,6 +457,8 @@ examples:
                         help="stdin read size in characters (default: 4096)")
         ap.add_argument("--max-buffer", type=int, default=8192, metavar="N",
                         help="maximum partial-line buffer before forced redaction (default: 8192)")
+        ap.add_argument("--entropy", action="store_true",
+                        help="also redact long high-entropy token-like strings")
 
     elif subcmd == "pii-text":
         ap.add_argument("--count", action="store_true",
@@ -492,7 +503,7 @@ def _print_splash() -> None:
 
 # ── doctor ────────────────────────────────────────────────────────────────────
 
-def cmd_doctor() -> None:
+def cmd_doctor() -> int:
     import shutil
     import subprocess
 
@@ -525,6 +536,7 @@ def cmd_doctor() -> None:
         p("[bold green]All tools installed.[/bold green]\n")
     else:
         p("[yellow]Missing tools.[/yellow]  Run [bold]agentscrub scan[/bold] and agentscrub will offer to install them.\n")
+    return 0 if all_ok else 1
 
 
 def _install_missing_detectors(missing: list[str], *, assume_yes: bool = False) -> None:
@@ -575,7 +587,7 @@ def _install_missing_detectors(missing: list[str], *, assume_yes: bool = False) 
 
 # ── schedule ──────────────────────────────────────────────────────────────────
 
-def cmd_schedule(action: str) -> None:
+def cmd_schedule(action: str) -> int:
     from . import schedule
     if action == "status":
         line = schedule.status()
@@ -591,8 +603,10 @@ def cmd_schedule(action: str) -> None:
             p(f"\n[bold green]✓[/bold green]  Installed:\n  [dim]{line}[/dim]\n")
         except ValueError as e:
             p(f"\n[yellow]{e}[/yellow]\n")
+            return 1
         except RuntimeError as e:
             p(f"\n[red]{e}[/red]\n")
+            return 1
 
     elif action == "uninstall":
         removed = schedule.uninstall()
@@ -600,13 +614,17 @@ def cmd_schedule(action: str) -> None:
             p("\n[bold green]✓[/bold green]  Cron job removed.\n")
         else:
             p("\n[yellow]No cron job found.[/yellow]\n")
+    else:
+        p(f"\n[red]Unknown schedule action: {action}[/red]\n")
+        return 1
+    return 0
 
 
 def cmd_redact_text(ns: argparse.Namespace) -> None:
     from .redact import redact_short_text
 
     text = sys.stdin.read()
-    redacted, count = redact_short_text(text)
+    redacted, count = redact_short_text(text, high_entropy=getattr(ns, "entropy", False))
     sys.stdout.write(redacted)
     if getattr(ns, "count", False):
         print(count, file=sys.stderr)
@@ -617,7 +635,10 @@ def cmd_pii_text(ns: argparse.Namespace) -> int:
         from .pii_rampart import redact_pii
     except Exception as e:
         p(f"[red]PII dependencies not installed: {e}[/red]")
-        p("[dim]Install with: pip install 'agentscrub[pii]'[/dim]")
+        pip_hint = _escape_markup("pip install 'agentscrub[pii]'")
+        p(f"[dim]Install PII support with:[/dim] {pip_hint}")
+        p("[dim]For pipx:[/dim] pipx inject agentscrub onnxruntime transformers huggingface-hub numpy")
+        p("[dim]Rampart downloads its public Hugging Face model on first use and caches it locally.[/dim]")
         return 1
 
     text = sys.stdin.read()
@@ -633,7 +654,10 @@ def cmd_pii_detect(ns: argparse.Namespace) -> int:
         from .pii_rampart import detect_pii
     except Exception as e:
         p(f"[red]PII dependencies not installed: {e}[/red]")
-        p("[dim]Install with: pip install 'agentscrub[pii]'[/dim]")
+        pip_hint = _escape_markup("pip install 'agentscrub[pii]'")
+        p(f"[dim]Install PII support with:[/dim] {pip_hint}")
+        p("[dim]For pipx:[/dim] pipx inject agentscrub onnxruntime transformers huggingface-hub numpy")
+        p("[dim]Rampart downloads its public Hugging Face model on first use and caches it locally.[/dim]")
         return 1
 
     text = sys.stdin.read()
@@ -648,26 +672,38 @@ def cmd_pii_detect(ns: argparse.Namespace) -> int:
 
 
 def cmd_watch_text(ns: argparse.Namespace) -> int:
-    from .redact import redact_short_text
+    from .redact import redact_short_text, redact_short_text_prefix
 
     chunk_size = max(1, int(getattr(ns, "chunk_size", 4096)))
     max_buffer = max(1, min(int(getattr(ns, "max_buffer", 8192)), 8192))
+    overlap = min(256, max_buffer)
+    flush_threshold = max_buffer + overlap
     total = 0
     pending = ""
 
-    def emit(piece: str) -> bool:
+    def emit(piece: str, prefix_len: int | None = None) -> tuple[bool, int]:
         nonlocal total
         if not piece:
-            return False
-        redacted, count = redact_short_text(piece)
+            return False, 0
+        if prefix_len is None:
+            redacted, count = redact_short_text(
+                piece, high_entropy=getattr(ns, "entropy", False)
+            )
+            consumed = len(piece)
+        else:
+            redacted, consumed, count = redact_short_text_prefix(
+                piece,
+                prefix_len,
+                high_entropy=getattr(ns, "entropy", False),
+            )
         sys.stdout.write(redacted)
         sys.stdout.flush()
         if not count:
-            return False
+            return False, consumed
         total += count
         if getattr(ns, "alert", False):
             print(f"agentscrub: redacted {count} secret(s)", file=sys.stderr, flush=True)
-        return True
+        return True, consumed
 
     while True:
         chunk = sys.stdin.read(chunk_size)
@@ -679,15 +715,23 @@ def cmd_watch_text(ns: argparse.Namespace) -> int:
             if newline_at >= 0:
                 piece = pending[:newline_at + 1]
                 pending = pending[newline_at + 1:]
-            elif len(pending) >= max_buffer:
-                piece = pending[:max_buffer]
-                pending = pending[max_buffer:]
+                detected, _ = emit(piece)
+            elif len(pending) >= flush_threshold:
+                piece = pending[:flush_threshold]
+                detected, consumed = emit(piece, max_buffer)
+                if not consumed:
+                    break
+                pending = pending[consumed:]
             else:
                 break
-            if emit(piece) and getattr(ns, "exit_on_detect", False):
+            if detected and getattr(ns, "exit_on_detect", False):
                 return 2
 
-    if pending and emit(pending) and getattr(ns, "exit_on_detect", False):
+    if pending:
+        detected, _ = emit(pending, len(pending))
+    else:
+        detected = False
+    if detected and getattr(ns, "exit_on_detect", False):
         return 2
     if getattr(ns, "count", False):
         print(total, file=sys.stderr)
@@ -696,18 +740,18 @@ def cmd_watch_text(ns: argparse.Namespace) -> int:
 
 # ── rollback ──────────────────────────────────────────────────────────────────
 
-def cmd_rollback(ns: argparse.Namespace) -> None:
+def cmd_rollback(ns: argparse.Namespace) -> int:
     from .backup import list_backups, list_restore_points, rollback
     from .discover import discover
 
     targets = discover()
     if not targets:
-        p("[red]No AI tool directories found.[/red]\n"); return
+        p("[red]No AI tool directories found.[/red]\n"); return 1
 
     if getattr(ns, "by_tool", False):
         backups = list_backups(targets)
         if not backups:
-            p("[yellow]No backups in ~/.agentscrub/backups/ yet.[/yellow]\n"); return
+            p("[yellow]No backups in ~/.agentscrub/backups/ yet.[/yellow]\n"); return 1
 
         p("\n[bold]Available tool backups[/bold]\n")
         for i, b in enumerate(backups, 1):
@@ -717,17 +761,17 @@ def cmd_rollback(ns: argparse.Namespace) -> None:
         p()
 
         if ns.list:
-            return
+            return 0
 
         try:
             raw = input("Restore tool backup # (or q to quit): ").strip()
         except EOFError:
-            return
+            return 1
         if not raw.isdigit() or raw.lower() == "q":
-            p("[dim]Aborted.[/dim]\n"); return
+            p("[dim]Aborted.[/dim]\n"); return 1
         idx = int(raw) - 1
         if not (0 <= idx < len(backups)):
-            p("[red]Invalid selection.[/red]\n"); return
+            p("[red]Invalid selection.[/red]\n"); return 1
 
         chosen = backups[idx]
         p(f"\n[yellow]Restoring {chosen.path} → {chosen.source} …[/yellow]")
@@ -741,11 +785,11 @@ def cmd_rollback(ns: argparse.Namespace) -> None:
             if stderr:
                 p(f"[red]{stderr}[/red]\n")
             p("[dim]Check manually with the path above.[/dim]\n")
-        return
+        return 0 if ok else 1
 
     points = list_restore_points(targets)
     if not points:
-        p("[yellow]No backups in ~/.agentscrub/backups/ yet.[/yellow]\n"); return
+        p("[yellow]No backups in ~/.agentscrub/backups/ yet.[/yellow]\n"); return 1
 
     p("\n[bold]Available restore points[/bold]\n")
     for i, point in enumerate(points, 1):
@@ -759,17 +803,17 @@ def cmd_rollback(ns: argparse.Namespace) -> None:
     p()
 
     if ns.list:
-        return
+        return 0
 
     try:
         raw = input("Restore point # (or q to quit): ").strip()
     except EOFError:
-        return
+        return 1
     if not raw.isdigit() or raw.lower() == "q":
-        p("[dim]Aborted.[/dim]\n"); return
+        p("[dim]Aborted.[/dim]\n"); return 1
     idx = int(raw) - 1
     if not (0 <= idx < len(points)):
-        p("[red]Invalid selection.[/red]\n"); return
+        p("[red]Invalid selection.[/red]\n"); return 1
 
     chosen = points[idx]
     p(f"\n[yellow]Restoring {chosen.created.strftime('%Y-%m-%d %H:%M')} "
@@ -789,11 +833,12 @@ def cmd_rollback(ns: argparse.Namespace) -> None:
         p(f"\n[bold red]✗[/bold red]  Rollback completed with {failed} failed tool(s).\n")
     else:
         p("\n[bold green]✓[/bold green]  Rollback complete.\n")
+    return 1 if failed else 0
 
 
 # ── scan & run ────────────────────────────────────────────────────────────────
 
-def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
+def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     from .backup import backup
     from .discover import discover
     from .redact import (
@@ -826,7 +871,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         if bad:
             p(f"[red]Unknown tool ID(s): {', '.join(sorted(bad))}[/red]")
             p("[dim]Run 'agentscrub --list-tools' to see available names.[/dim]\n")
-            return
+            return 1
 
     targets = discover(extra)
     if only_set:
@@ -839,7 +884,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         else:
             p("[red]No AI tool directories found on this machine.[/red]")
             p("[dim]Use --also <path> to specify a directory manually.[/dim]\n")
-        return
+        return 1
 
     # Refuse to claim "clean" when no detectors exist — that would be silent failure.
     from .secrets import tools_status
@@ -854,7 +899,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     if not available:
         p("\n[bold red]No detection tools installed.[/bold red]")
         p("[dim]agentscrub needs at least one of gitleaks, TruffleHog, or Titus.[/dim]")
-        return
+        return 1
     if missing:
         p(f"\n[yellow]Only {len(available)}/3 detectors installed "
           f"(missing: {', '.join(missing)}). Coverage will be reduced.[/yellow]")
@@ -989,8 +1034,6 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         counts = {t: len(d) for t, d in by_tool.items()}
 
         from .secrets import all_typed as _all_typed_fn
-        from .secrets import top_types as _top_types
-        _type_counts = _top_types(by_tool)
         _all_typed   = _all_typed_fn(by_tool)
     else:
         import concurrent.futures as _cf
@@ -1088,8 +1131,6 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     preserved = [fp for fp in flagged_all if is_managed_credential_file(fp)]
     flagged = [fp for fp in flagged_all if not is_managed_credential_file(fp)]
     redactable_files = [fp for fp in scanned_files if not is_managed_credential_file(fp)]
-    pct = len(flagged) / len(redactable_files) * 100 if redactable_files else 0
-
     # ── per-target breakdown ──────────────────────────────────────────────────
     files_per_target   = {t: 0 for t in targets}
     flagged_per_target = {t: 0 for t in targets}
@@ -1184,7 +1225,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
         # those corrupts user data far worse than missing a real secret. Only
         # labels in _HIGH_PRECISION_LABELS get redacted; everything else is
         # reported here and in the audit but never modified.
-        redactable_secrets, report_only_secrets = partition_secrets_by_precision(
+        redactable_secrets, _ = partition_secrets_by_precision(
             all_secrets, _all_typed
         )
         flagged_redactable: list[Path] = []
@@ -1309,7 +1350,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     else:
         # No findings at all — nothing to partition; still set defaults
         # so the rest of the function compiles without unbound names.
-        redactable_secrets, report_only_secrets = set(), set()
+        redactable_secrets = set()
         flagged_redactable, flagged_lowconf_only = [], []
         actionable_redactable_secrets = set()
         total_hits_redactable = 0
@@ -1513,12 +1554,22 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     _sqlite_preview_total, sqlite_preview_results = redact_sqlite(
         redactable_secrets, targets, dry_run=True
     )
-    sqlite_backup_files = [
-        db_path for db_path, count, _err in sqlite_preview_results if count > 0
-    ]
+    sqlite_backup_files: list[Path] = []
+    for db_path, count, _err in sqlite_preview_results:
+        if count <= 0:
+            continue
+        sqlite_backup_files.append(db_path)
+        for sidecar in (Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")):
+            if sidecar.is_file():
+                sqlite_backup_files.append(sidecar)
     backup_files = [*flagged_redactable, *sqlite_backup_files]
 
-    for b in backup(targets, max_keep=max_backups, files=backup_files):
+    try:
+        backups = backup(targets, max_keep=max_backups, files=backup_files)
+    except Exception as e:
+        p(f"  [red]Backup failed; no files were modified:[/red] {e}")
+        return 1
+    for b in backups:
         p(f"  [green]✓[/green]  {b.display:<22} [dim]encrypted · {b.path}[/dim]")
 
     # ── phase 3: redact text ──────────────────────────────────────────────────
@@ -1596,6 +1647,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
     sqlite_total, sqlite_results = redact_sqlite(redactable_secrets, targets, dry_run=False)
     if not sqlite_results:
         p("  [dim]no databases found[/dim]")
+    sqlite_errors = 0
     for db_path, count, err in sqlite_results:
         label = str(db_path)
         # Find which tool owns this DB so the line reads "Codex CLI · logs_2.sqlite"
@@ -1610,6 +1662,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
                 continue
         prefix = f"[dim]{owning} ·[/dim] " if owning else ""
         if count < 0:
+            sqlite_errors += 1
             p(f"  [red]WARN[/red]  {prefix}{label}: {err or 'error'}")
         else:
             p(f"  [bold green] OK [/bold green]  {prefix}{label}  [dim]→[/dim]  {count:,}")
@@ -1649,6 +1702,10 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> None:
             print(f"  {len(still_exposed)} files still contain secrets after cleanup", flush=True)
         print(flush=True)
 
+    if errors or still_exposed or sqlite_errors:
+        return 1
+    return 0
+
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
@@ -1663,11 +1720,11 @@ def main() -> int:
             cmd_list_tools()
             return 0
         if subcmd == "doctor":
-            cmd_doctor()
+            return cmd_doctor()
         elif subcmd == "schedule":
-            cmd_schedule(getattr(ns, "action", "status"))
+            return cmd_schedule(getattr(ns, "action", "status"))
         elif subcmd == "rollback":
-            cmd_rollback(ns)
+            return cmd_rollback(ns)
         elif subcmd == "redact-text":
             cmd_redact_text(ns)
         elif subcmd == "watch-text":
@@ -1677,10 +1734,14 @@ def main() -> int:
         elif subcmd == "pii-detect":
             return cmd_pii_detect(ns)
         else:
-            cmd_scan_or_run(subcmd, ns)
+            result = cmd_scan_or_run(subcmd, ns)
+            return result if isinstance(result, int) else 0
     except KeyboardInterrupt:
         p("\n[yellow]Aborted.[/yellow]")
         return 130
+    except Exception as e:
+        p(f"\n[red]Operation failed:[/red] {e}")
+        return 1
     return 0
 
 

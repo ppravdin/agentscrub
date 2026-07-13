@@ -1,5 +1,6 @@
 """Collect secrets via gitleaks, TruffleHog, and Titus (run in parallel)."""
 from __future__ import annotations
+
 import base64
 import collections
 import concurrent.futures
@@ -42,13 +43,18 @@ def _gitleaks(d: Path) -> dict[str, str]:
     os.close(fd)
     try:
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [str(GITLEAKS), "detect", "--source", str(d),
                  "--no-git", "--report-format", "json", "--report-path", out],
                 capture_output=True, text=True, timeout=180,
             )
+            if result.returncode not in (0, 1):  # gitleaks uses 1 for findings
+                raise RuntimeError(
+                    f"gitleaks failed ({result.returncode}): "
+                    f"{(result.stderr or '').strip()[:300]}"
+                )
         except subprocess.TimeoutExpired:
-            return {}
+            raise RuntimeError("gitleaks timed out after 180 seconds") from None
         s: dict[str, str] = {}
         try:
             with open(out) as fh:
@@ -56,8 +62,8 @@ def _gitleaks(d: Path) -> dict[str, str]:
                     v = h.get("Secret", "").strip()
                     if v and len(v) >= 8:
                         s[v] = h.get("RuleID", "unknown")
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError) as e:
+            raise RuntimeError(f"gitleaks returned an unreadable report: {e}") from e
         return s
     finally:
         try:
@@ -76,7 +82,11 @@ def _trufflehog(d: Path) -> dict[str, str]:
             capture_output=True, text=True, timeout=180,
         )
     except subprocess.TimeoutExpired:
-        return {}
+        raise RuntimeError("TruffleHog timed out after 180 seconds") from None
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"TruffleHog failed ({r.returncode}): {(r.stderr or '').strip()[:300]}"
+        )
     s: dict[str, str] = {}
     for line in r.stdout.splitlines():
         try:
@@ -86,8 +96,8 @@ def _trufflehog(d: Path) -> dict[str, str]:
                 v = h.get(field, "").strip()
                 if v and len(v) >= 8:
                     s[v] = name
-        except Exception:
-            continue
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"TruffleHog returned invalid JSON: {e}") from e
     return s
 
 
@@ -101,7 +111,11 @@ def _titus(d: Path) -> dict[str, str]:
             capture_output=True, text=True, timeout=180,
         )
     except subprocess.TimeoutExpired:
-        return {}
+        raise RuntimeError("Titus timed out after 180 seconds") from None
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Titus failed ({r.returncode}): {(r.stderr or '').strip()[:300]}"
+        )
     s: dict[str, str] = {}
     try:
         for hit in json.loads(r.stdout):
@@ -114,8 +128,8 @@ def _titus(d: Path) -> dict[str, str]:
                         s[v] = name
                 except Exception:
                     pass
-    except Exception:
-        pass
+    except (TypeError, json.JSONDecodeError) as e:
+        raise RuntimeError(f"Titus returned invalid JSON: {e}") from e
     return s
 
 
@@ -129,6 +143,7 @@ def _run_on_files(files: list[Path], fn) -> dict[str, str]:
     if not files:
         return {}
     import shutil as _shutil
+
     from .backup import BACKUP_ROOT
     try:
         tmp_parent = BACKUP_ROOT.parent

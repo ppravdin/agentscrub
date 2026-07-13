@@ -35,6 +35,23 @@ class TestMergeHelpers:
 
 
 class TestDetectorParsing:
+    def test_trufflehog_failure_is_not_treated_as_clean(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_run(cmd, **kwargs):
+            class R:
+                returncode = 2
+                stdout = ""
+                stderr = "detector failed"
+
+            return R()
+
+        monkeypatch.setattr("agentscrub.secrets.TRUFFLEHOG", tmp_path / "trufflehog")
+        (tmp_path / "trufflehog").touch()
+        with patch("agentscrub.secrets.subprocess.run", fake_run):
+            with pytest.raises(RuntimeError, match="TruffleHog failed"):
+                _trufflehog(tmp_path)
+
     def test_gitleaks_parses_report(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         secret = "ghp_" + "x" * 36
         report = [{"Secret": secret, "RuleID": "github-pat"}]

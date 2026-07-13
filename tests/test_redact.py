@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,18 @@ class TestRedactShortText:
         assert count == 0
         assert new == text
 
+    def test_high_entropy_token_requires_explicit_opt_in(self) -> None:
+        token = "ZxPrtgigTMcYHx3@NtXyMMoipkzTrHWfzTY4PsT6gg83xjL3Jxuci@mX7u_32NeN"
+        text = f"value={token}"
+        unchanged, count = redact_short_text(text)
+        assert count == 0
+        assert unchanged == text
+
+        redacted, count = redact_short_text(text, high_entropy=True)
+        assert count == 1
+        assert token not in redacted
+        assert redacted == "value=[REDACTED]"
+
 
 class TestRedactFile:
     def test_jsonl_redacted_on_disk(self, tmp_path: Path, sample_secret: str) -> None:
@@ -184,6 +197,13 @@ class TestRedactFile:
         _, count, _ = redact_file((str(fp), frozenset({sample_secret}), False))
         assert count >= 1
         assert REDACTED in fp.read_text()
+
+    def test_redaction_preserves_file_mode(self, tmp_path: Path, sample_secret: str) -> None:
+        fp = tmp_path / "restricted.log"
+        fp.write_text(f"password={sample_secret}\n", encoding="utf-8")
+        fp.chmod(0o600)
+        redact_file((str(fp), frozenset({sample_secret}), False))
+        assert stat.S_IMODE(fp.stat().st_mode) == 0o600
 
 
 class TestCollectFiles:

@@ -1,5 +1,6 @@
 """Backup rotation and rollback."""
 from __future__ import annotations
+
 import hmac
 import os
 import shutil
@@ -22,6 +23,7 @@ _ENC_SUFFIX = ".tar.gz.enc"
 _PARTIAL_ENC_SUFFIX = ".partial.tar.gz.enc"
 _MAGIC = b"agentscrub-backup-v1\n"
 _CHUNK = 1024 * 1024
+_SQLITE_SUFFIXES = (".sqlite", ".db", ".vscdb")
 
 _RSYNC_PROTECTED = (
     ".credentials.json",
@@ -266,6 +268,19 @@ def _remove_backup_path(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def _remove_unbacked_sqlite_sidecars(restore_root: Path, source: Path) -> None:
+    """Remove live WAL/SHM files absent from a partial database backup."""
+    for restored in restore_root.rglob("*"):
+        if not restored.is_file() or restored.suffix not in _SQLITE_SUFFIXES:
+            continue
+        relative = restored.relative_to(restore_root)
+        live_db = source / relative
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(live_db) + suffix)
+            if not (restore_root / (str(relative) + suffix)).exists():
+                sidecar.unlink(missing_ok=True)
+
+
 def _encrypt_plaintext_backup(path: Path) -> Path:
     archive = _encrypted_path(path.parent, path.name)
     if archive.exists():
@@ -332,6 +347,7 @@ def backup(
     os.chmod(BACKUP_ROOT.parent, 0o700)
     ts = datetime.now().strftime(_FMT)
     created: list[Backup] = []
+    failures: list[str] = []
     partial = files is not None
     files_by_target: dict[ScanTarget, list[Path]] = {t: [] for t in targets}
     if files is not None:
@@ -363,6 +379,7 @@ def backup(
                 _encrypt_file(tar_path, archive)
         except Exception as e:
             print(f"  [WARN] backup failed for {target.path}: {str(e)[:200]}", flush=True)
+            failures.append(f"{target.display}: {e}")
             continue
 
         created.append(Backup(
@@ -380,6 +397,8 @@ def backup(
         for _created, old, _encrypted, _partial in all_bups[:-max_keep] if len(all_bups) > max_keep else []:
             _remove_backup_path(old)
 
+    if failures:
+        raise RuntimeError("backup failed: " + "; ".join(failures))
     return created
 
 
@@ -488,6 +507,9 @@ def rollback(b: Backup) -> tuple[bool, str]:
                 src = b.path
         except Exception as e:
             return False, str(e)
+
+        if b.partial and b.encrypted:
+            _remove_unbacked_sqlite_sidecars(restore_root, b.source)
 
         cmd = ["rsync", "-a", "--checksum"]
         if not b.partial:

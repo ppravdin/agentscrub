@@ -13,7 +13,6 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-
 BIN_DIR = Path.home() / ".agentscrub" / "bin"
 
 

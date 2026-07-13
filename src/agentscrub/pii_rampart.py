@@ -24,8 +24,12 @@ from huggingface_hub import hf_hub_download
 from transformers import AutoTokenizer
 
 RAMPART_MODEL_ID = "nationaldesignstudio/rampart"
+RAMPART_REVISION = "b1993e4e68b082835b80ffc65acc03325ea2e501"
 ONNX_FILE = "onnx/model_q4.onnx"
 CONFIG_FILE = "config.json"
+_MODEL_CHAR_CHUNK = 100_000
+_MODEL_CHAR_OVERLAP = 4_096
+_MAX_PLACEHOLDERS = 10_000
 
 # Labels that are redacted by default in the official runtime.
 DETERMINISTIC_LABELS = frozenset({"SSN", "CREDIT_CARD", "EMAIL", "URL", "IP_ADDRESS"})
@@ -109,6 +113,7 @@ class RampartPiiDetector:
             filename=CONFIG_FILE,
             cache_dir=self.cache_dir,
             local_files_only=local_files_only,
+            revision=RAMPART_REVISION,
         )
         with open(config_path) as fh:
             config = json.load(fh)
@@ -118,6 +123,7 @@ class RampartPiiDetector:
             self.model_id,
             cache_dir=self.cache_dir,
             local_files_only=local_files_only,
+            revision=RAMPART_REVISION,
         )
 
         model_path = hf_hub_download(
@@ -125,13 +131,10 @@ class RampartPiiDetector:
             filename=ONNX_FILE,
             cache_dir=self.cache_dir,
             local_files_only=local_files_only,
+            revision=RAMPART_REVISION,
         )
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if self.device == "cuda" else ["CPUExecutionProvider"]
         self._session = ort.InferenceSession(model_path, providers=providers)
-
-    def _normalize(self, text: str) -> str:
-        """Match the runtime normalization: lowercase, NFKD, strip combining marks."""
-        return self._normalize_with_map(text)[0]
 
     @staticmethod
     def _normalize_with_map(text: str) -> tuple[str, list[int]]:
@@ -211,6 +214,22 @@ class RampartPiiDetector:
 
         if not text:
             return []
+        if len(text) > _MODEL_CHAR_CHUNK:
+            step = _MODEL_CHAR_CHUNK - _MODEL_CHAR_OVERLAP
+            spans: list[Span] = []
+            for chunk_start in range(0, len(text), step):
+                chunk_end = min(len(text), chunk_start + _MODEL_CHAR_CHUNK)
+                for span in self._detect_model(text[chunk_start:chunk_end]):
+                    spans.append(Span(
+                        span.label,
+                        span.start + chunk_start,
+                        span.end + chunk_start,
+                        text[span.start + chunk_start:span.end + chunk_start],
+                        span.score,
+                    ))
+                if chunk_end == len(text):
+                    break
+            return spans
         normalized, normalized_to_original = self._normalize_with_map(text)
         enc = self._tokenizer(
             normalized,
@@ -363,6 +382,9 @@ class RampartPiiDetector:
     def _placeholder_for(self, label: str, value: str) -> str:
         key = (label, value)
         if key not in self._placeholders:
+            if len(self._placeholders) >= _MAX_PLACEHOLDERS:
+                oldest = next(iter(self._placeholders))
+                del self._placeholders[oldest]
             self._counters[label] = self._counters.get(label, 0) + 1
             self._placeholders[key] = f"[{label}_{self._counters[label]}]"
         return self._placeholders[key]

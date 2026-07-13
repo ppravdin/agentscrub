@@ -29,6 +29,23 @@ requires_rsync = pytest.mark.skipif(not has_rsync(), reason="rsync not on PATH")
 
 
 class TestBackup:
+    def test_backup_failure_is_fatal(
+        self,
+        scan_target: ScanTarget,
+        agentscrub_paths: Path,
+        backup_key: bytes,
+        claude_tree: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        session = next(claude_tree.rglob("session.jsonl"))
+
+        def fail_encrypt(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("agentscrub.backup._encrypt_file", fail_encrypt)
+        with pytest.raises(RuntimeError, match="backup failed"):
+            backup([scan_target], files=[session])
+
     def test_partial_backup_single_file(
         self,
         scan_target: ScanTarget,

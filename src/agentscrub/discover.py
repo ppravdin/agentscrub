@@ -1,5 +1,6 @@
 """Auto-discover AI coding assistant log directories on this machine."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path

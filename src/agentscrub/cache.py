@@ -1,5 +1,7 @@
 """Incremental scan cache — skip files whose content hasn't changed since last clean scan."""
 from __future__ import annotations
+
+import hashlib
 import json
 import os
 import sqlite3
@@ -9,6 +11,15 @@ from pathlib import Path
 from .backup import BACKUP_ROOT
 
 _CACHE_DB = BACKUP_ROOT.parent / "state.db"   # ~/.agentscrub/state.db
+_CACHE_POLICY_VERSION = "2"
+
+
+def _file_digest(fp: Path) -> str:
+    digest = hashlib.blake2b(digest_size=16)
+    with fp.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _connect() -> sqlite3.Connection:
@@ -28,21 +39,34 @@ def _connect() -> sqlite3.Connection:
             path      TEXT    PRIMARY KEY,
             mtime_ns  INTEGER NOT NULL,
             size      INTEGER NOT NULL,
+            digest    TEXT    NOT NULL DEFAULT '',
             cached_at INTEGER NOT NULL
         )
     """)
+    columns = {row[1] for row in con.execute("PRAGMA table_info(file_cache)")}
+    if "digest" not in columns:
+        con.execute("ALTER TABLE file_cache ADD COLUMN digest TEXT NOT NULL DEFAULT ''")
     con.commit()
     return con
 
 
 def _detector_fingerprint() -> str:
     """JSON fingerprint of installed detector versions for cache invalidation."""
+    from . import __version__
     from .installers import BIN_DIR, detector_specs
     specs = detector_specs()
     versions = {key: spec.version for key, spec in specs.items()}
     # Include which detectors are actually installed
     installed = {key: (BIN_DIR / spec.binary).exists() for key, spec in specs.items()}
-    return json.dumps({"versions": versions, "installed": installed}, sort_keys=True)
+    return json.dumps(
+        {
+            "agentscrub": __version__,
+            "policy": _CACHE_POLICY_VERSION,
+            "versions": versions,
+            "installed": installed,
+        },
+        sort_keys=True,
+    )
 
 
 def _check_and_wipe_if_stale(con: sqlite3.Connection) -> None:
@@ -92,15 +116,23 @@ def filter_uncached(files: list[Path]) -> tuple[list[Path], int]:
 
         placeholders = ",".join("?" * len(st_map))
         rows = con.execute(
-            f"SELECT path, mtime_ns, size FROM file_cache WHERE path IN ({placeholders})",
+            f"SELECT path, mtime_ns, size, digest FROM file_cache WHERE path IN ({placeholders})",
             [str(fp) for fp in st_map],
         ).fetchall()
-        cached = {row[0]: (row[1], row[2]) for row in rows}
+        cached = {row[0]: (row[1], row[2], row[3]) for row in rows}
 
         needs_scan: list[Path] = list(missing)
         n_skipped = 0
         for fp, (mtime_ns, size) in st_map.items():
-            if cached.get(str(fp)) == (mtime_ns, size):
+            cached_row = cached.get(str(fp))
+            if cached_row is None or cached_row[:2] != (mtime_ns, size):
+                needs_scan.append(fp)
+                continue
+            try:
+                unchanged = bool(cached_row[2]) and _file_digest(fp) == cached_row[2]
+            except OSError:
+                unchanged = False
+            if unchanged:
                 n_skipped += 1
             else:
                 needs_scan.append(fp)
@@ -119,11 +151,11 @@ def mark_clean(files: list[Path]) -> None:
     if not files:
         return
     now = int(time.time())
-    rows: list[tuple[str, int, int, int]] = []
+    rows: list[tuple[str, int, int, str, int]] = []
     for fp in files:
         try:
             st = fp.stat()
-            rows.append((str(fp), st.st_mtime_ns, st.st_size, now))
+            rows.append((str(fp), st.st_mtime_ns, st.st_size, _file_digest(fp), now))
         except OSError:
             continue
     if not rows:
@@ -131,8 +163,8 @@ def mark_clean(files: list[Path]) -> None:
     try:
         con = _connect()
         con.executemany(
-            "INSERT OR REPLACE INTO file_cache (path, mtime_ns, size, cached_at)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO file_cache (path, mtime_ns, size, digest, cached_at)"
+            " VALUES (?, ?, ?, ?, ?)",
             rows,
         )
         con.commit()
