@@ -371,45 +371,43 @@ def _parse() -> tuple[str, argparse.Namespace]:
     if argv and argv[0] in commands:
         subcmd, argv = argv[0], argv[1:]
 
+    if subcmd in ("pii-text", "pii-detect"):
+        epilog = """
+PII support:
+  pip install 'agentscrub[pii]'
+  Rampart downloads its public Hugging Face model on first use.
+        """
+    elif subcmd in ("redact-text", "watch-text"):
+        epilog = None
+    else:
+        epilog = """
+commands:
+  scan          find and show what's exposed — no writes
+  run           redact everything (default)
+  rollback      restore a previous backup
+  doctor        verify detection tools
+  schedule      manage the daily cron job
+  redact-text   redact short text from stdin
+  watch-text    redact streaming text from stdin
+  pii-text      redact personal data from stdin
+  pii-detect    list PII found in stdin
+
+examples:
+  agentscrub scan
+  agentscrub run --yes
+  agentscrub rollback
+  agentscrub doctor
+  printf 'token=...' | agentscrub redact-text
+  tail -f app.log | agentscrub watch-text --alert
+  agentscrub schedule install
+  agentscrub --list-tools
+        """
+
     ap = argparse.ArgumentParser(
         prog="agentscrub",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Scrub secrets and credentials from AI coding assistant session logs.",
-        epilog="""
-commands:
-  scan              find & show what's exposed — no writes
-  run               redact everything (default)
-  rollback          restore a previous backup
-  doctor            verify detection tools are installed
-  schedule          manage the daily cron job
-  redact-text       redact a tiny terminal/screen text update from stdin
-  watch-text        follow stdin and redact terminal/screen text as it arrives
-  pii-text          redact personal information (names, addresses, SSNs, etc.) from stdin
-  pii-detect        show what personal information Rampart finds in stdin
-
-examples:
-  agentscrub scan                      see what's exposed before touching anything
-  agentscrub run                       redact (asks for confirmation)
-  agentscrub run --yes                 redact without prompt — for cron / CI
-  agentscrub rollback                  pick a restore point to restore
-  agentscrub doctor                    check gitleaks / TruffleHog / Titus
-  printf 'token=ghp_...' | agentscrub redact-text
-  printf 'token=generated...' | agentscrub redact-text --entropy
-  tail -f app.log | agentscrub watch-text --alert
-  tail -f app.log | agentscrub watch-text --entropy --alert
-  --entropy is stream-only; scheduled run remains detector-based
-  pip install 'agentscrub[pii]'       install optional PII support
-  pipx inject agentscrub onnxruntime transformers huggingface-hub numpy
-                                      install PII support into pipx
-  PII uses Rampart; its public Hugging Face model is cached on first use
-  agentscrub schedule install          add daily 3am cron job
-  agentscrub schedule uninstall        remove cron job
-  agentscrub schedule status           show current cron entry
-  agentscrub run --also ~/my-ai-tool   scan an extra directory
-  agentscrub run --only claude         redact only Claude Code session logs
-  agentscrub scan --only claude,codex  preview a two-tool scan
-  agentscrub --list-tools              list every known tool ID
-        """,
+        epilog=epilog,
     )
     ap.add_argument("--version", action="store_true",
                     help="show version and exit")

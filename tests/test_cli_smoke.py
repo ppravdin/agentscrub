@@ -34,9 +34,32 @@ def test_main_help(fake_home) -> None:
     assert "scan" in r.stdout
     assert "pii-text" in r.stdout
     assert "pii-detect" in r.stdout
+    assert "pip install 'agentscrub[pii]'" not in r.stdout
+
+
+def test_stream_help_lists_entropy_option(fake_home) -> None:
+    env = {**os.environ, "HOME": str(fake_home)}
+    r = subprocess.run(
+        [sys.executable, "-m", "agentscrub.cli", "watch-text", "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode == 0
     assert "--entropy" in r.stdout
+    assert "high-entropy token-like strings" in r.stdout
+
+
+def test_pii_help_lists_optional_install(fake_home) -> None:
+    env = {**os.environ, "HOME": str(fake_home)}
+    r = subprocess.run(
+        [sys.executable, "-m", "agentscrub.cli", "pii-text", "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode == 0
     assert "pip install 'agentscrub[pii]'" in r.stdout
-    assert "pipx inject agentscrub onnxruntime transformers huggingface-hub numpy" in r.stdout
     assert "Hugging Face" in r.stdout
 
 

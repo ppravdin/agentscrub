@@ -1,4 +1,4 @@
-# Publish to PyPI when a version tag is pushed (e.g. v1.1.32).
+# Publish to PyPI when a version tag is pushed (e.g. v1.1.33).
 #
 # One-time PyPI setup (Trusted Publishing):
 #   1. PyPI → Your project → Publishing → Add GitHub Actions publisher
@@ -7,7 +7,7 @@
 #
 # Release:
 #   1. Bump version in pyproject.toml and src/agentscrub/__init__.py
-#   2. git tag v1.1.32 && git push origin v1.1.32
+#   2. git tag v1.1.33 && git push origin v1.1.33
 
 name: release
 
