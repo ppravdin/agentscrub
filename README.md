@@ -1,6 +1,6 @@
 # agentscrub
 
-![agentscrub scans local AI agent logs for leaked secrets](https://raw.githubusercontent.com/ppravdin/agentscrub/v1.1.34/assets/cover.png)
+![agentscrub scans local AI agent logs for leaked secrets](https://raw.githubusercontent.com/ppravdin/agentscrub/v1.1.35/assets/cover.png)
 
 **Find and redact leaked secrets in local AI coding-agent logs.**
 
@@ -54,6 +54,10 @@ agentscrub scan
 
 # Redact in place. Asks for confirmation and takes a backup first.
 agentscrub run
+
+# Check for updates and upgrade to the latest PyPI release
+agentscrub update --check
+agentscrub update
 
 # Optional: backup + redact daily at 03:00
 agentscrub schedule install

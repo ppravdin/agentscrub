@@ -365,7 +365,7 @@ def _parse() -> tuple[str, argparse.Namespace]:
     argv = sys.argv[1:]
     subcmd = "run"
     commands = (
-        "scan", "run", "rollback", "doctor", "schedule",
+        "scan", "run", "rollback", "doctor", "schedule", "update",
         "redact-text", "watch-text", "pii-text", "pii-detect",
     )
     if argv and argv[0] in commands:
@@ -387,6 +387,7 @@ commands:
   rollback      restore a previous backup
   doctor        verify detection tools
   schedule      manage the daily cron job
+  update        update agentscrub to latest version
   redact-text   redact short text from stdin
   watch-text    redact streaming text from stdin
   pii-text      redact personal data from stdin
@@ -395,6 +396,7 @@ commands:
 examples:
   agentscrub scan
   agentscrub run --yes
+  agentscrub update
   agentscrub rollback
   agentscrub doctor
   printf 'token=...' | agentscrub redact-text
@@ -437,6 +439,12 @@ examples:
         ap.add_argument("action", nargs="?",
                         choices=["install", "uninstall", "status"],
                         default="status")
+
+    elif subcmd == "update":
+        ap.add_argument("--check", action="store_true",
+                        help="check for updates without upgrading")
+        ap.add_argument("--yes", "-y", action="store_true",
+                        help="skip confirmation prompt")
 
     elif subcmd == "redact-text":
         ap.add_argument("--count", action="store_true",
@@ -1723,6 +1731,9 @@ def main() -> int:
             return cmd_schedule(getattr(ns, "action", "status"))
         elif subcmd == "rollback":
             return cmd_rollback(ns)
+        elif subcmd == "update":
+            from .updater import run_update
+            return run_update(check_only=getattr(ns, "check", False), yes=getattr(ns, "yes", False))
         elif subcmd == "redact-text":
             cmd_redact_text(ns)
         elif subcmd == "watch-text":
