@@ -61,3 +61,17 @@ class TestDiscover:
         targets = discover()
         windsurf = [t for t in targets if t.tool == "windsurf"]
         assert len(windsurf) <= 1
+
+    def test_finds_existing_antigravity_dirs(self, fake_home: Path) -> None:
+        ag_dir = fake_home / ".antigravity"
+        ag_dir.mkdir(parents=True)
+        (ag_dir / "session.json").write_text("{}")
+        
+        ag_app_dir = fake_home / ".config" / "Antigravity" / "User" / "workspaceStorage"
+        ag_app_dir.mkdir(parents=True)
+        (ag_app_dir / "workspace1").mkdir()
+
+        targets = discover()
+        tools = {t.tool for t in targets}
+        assert "antigravity" in tools
+        assert "antigravity-app" in tools

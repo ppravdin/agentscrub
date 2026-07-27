@@ -106,10 +106,25 @@ _REGISTRY: list[dict] = [
     dict(
         tool="antigravity",
         display="Google Antigravity",
-        dirs=["~/.antigravity-server"],
+        dirs=[
+            "~/.antigravity",
+            "~/.antigravity-server",
+        ],
         # Same VS Code-fork cache pattern as Cursor server.
         exclude_dirs={"bin", "extensions", "node_modules",
                       "CachedProfilesData", "CachedExtensionVSIXs", "logs"},
+        exclude_files={"mcp.json", "mcp_config.json"},
+    ),
+    dict(
+        tool="antigravity-app",
+        display="Google Antigravity (desktop)",
+        dirs=[
+            "~/Library/Application Support/Antigravity/User/workspaceStorage",
+            "~/.config/Antigravity/User/workspaceStorage",
+            "~/AppData/Roaming/Antigravity/User/workspaceStorage",
+        ],
+        exclude_dirs={"bin", "extensions", "node_modules",
+                      "CachedProfilesData", "CachedExtensionVSIXs"},
         exclude_files={"mcp.json", "mcp_config.json"},
     ),
     dict(
