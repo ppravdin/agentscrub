@@ -280,3 +280,29 @@ class TestRedactSqlite:
         con.close()
         assert sample_secret not in val
         assert REDACTED in val
+
+
+class TestShortTextRedaction:
+    def test_redacts_redis_url(self) -> None:
+        from agentscrub.redact import redact_short_text
+        text = "REDIS_URL: redis://:b27f91a87b9dce7f0f3dc9fe42a50d38f223e4c26f435310247bf1114b1384eb@dokku-redis-aiche-redis:6379"
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert "b27f91a87b9dce7f0f3dc9fe42a50d38f223e4c26f435310247bf1114b1384eb" not in res
+        assert REDACTED in res
+
+    def test_redacts_shell_secret_variable(self) -> None:
+        from agentscrub.redact import redact_short_text
+        text = 'REDIS_PW="b27f91a87b9dce7f0f3dc9fe42a50d38f223e4c26f435310247bf1114b1384eb"'
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert "b27f91a87b9dce7f0f3dc9fe42a50d38f223e4c26f435310247bf1114b1384eb" not in res
+        assert REDACTED in res
+
+    def test_redacts_redis_cli_auth(self) -> None:
+        from agentscrub.redact import redact_short_text
+        text = 'redis-cli -a "mysecretpassword123"'
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert "mysecretpassword123" not in res
+        assert REDACTED in res

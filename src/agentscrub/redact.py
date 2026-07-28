@@ -598,6 +598,26 @@ _SHORT_TEXT_SECRET_MARKERS = (
     "AccountKey=",
     "eyJ",
     "-----BEGIN",
+    "redis://",
+    "rediss://",
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "mongodb://",
+    "mongodb+srv://",
+    "amqp://",
+    "amqps://",
+    "REDIS",
+    "POSTGRES",
+    "MYSQL",
+    "DATABASE",
+    "PASSWORD=",
+    "SECRET=",
+    "TOKEN=",
+    "KEY=",
+    "AUTH=",
+    "PW=",
+    "redis-cli",
 )
 
 # In-process hot path for tiny terminal screen updates: redact the most-used
@@ -611,6 +631,12 @@ _SHORT_TEXT_SECRET_MARKERS = (
 _SHORT_TEXT_SECRET_RE = re.compile(
     "|".join(
         [
+            # Database / Cache connection URIs with passwords (Redis, Postgres, MySQL, MongoDB, AMQP)
+            r"(?:redis|rediss|postgres|postgresql|mysql|mongodb(?:\+srv)?|amqp|amqps)://[^:\s]*:[^@\s]+@[^/\s]+",
+            # Secret / Password / Key / Token assignment variables in shell / env / logs
+            r"(?:[A-Za-z0-9_]*(?:PASSWORD|PW|SECRET|TOKEN|KEY|PASS|AUTH)[A-Za-z0-9_]*)\s*=\s*(?:\"[^\"]+\"|'[^']+'|[^\s;]+)",
+            # redis-cli -a password pattern
+            r"redis-cli\s+-a\s+(?:\"[^\"]+\"|'[^']+'|[^\s;]+)",
             # GitHub / GitLab personal access tokens
             r"github_pat_[A-Za-z0-9_]{20,}",
             r"gh[opusr]_[A-Za-z0-9_]{20,}",

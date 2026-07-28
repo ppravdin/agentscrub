@@ -1,6 +1,6 @@
 # agentscrub
 
-![agentscrub scans local AI agent logs for leaked secrets](https://raw.githubusercontent.com/ppravdin/agentscrub/v1.1.35/assets/cover.png)
+![agentscrub scans local AI agent logs for leaked secrets](https://raw.githubusercontent.com/ppravdin/agentscrub/v1.1.36/assets/cover.png)
 
 **Find and redact leaked secrets in local AI coding-agent logs.**
 
