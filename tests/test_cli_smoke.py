@@ -134,6 +134,21 @@ def test_watch_text_redacts_stream(fake_home) -> None:
     assert r.stderr.strip().endswith("1")
 
 
+def test_watch_alias_works(fake_home) -> None:
+    env = {**os.environ, "HOME": str(fake_home)}
+    token = "AICHE_DEBUG_TOKEN=PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
+    r = subprocess.run(
+        [sys.executable, "-m", "agentscrub.cli", "--watch", "--alert"],
+        input=f"+{token}\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert r.returncode == 0
+    assert "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po" not in r.stdout
+    assert "+[REDACTED]" in r.stdout
+
+
 def test_watch_text_exit_on_detect(fake_home) -> None:
     env = {**os.environ, "HOME": str(fake_home)}
     token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"

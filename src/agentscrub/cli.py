@@ -366,10 +366,12 @@ def _parse() -> tuple[str, argparse.Namespace]:
     subcmd = "run"
     commands = (
         "scan", "run", "rollback", "doctor", "schedule", "update",
-        "redact-text", "watch-text", "pii-text", "pii-detect",
+        "redact-text", "watch-text", "watch", "--watch", "pii-text", "pii-detect",
     )
     if argv and argv[0] in commands:
         subcmd, argv = argv[0], argv[1:]
+        if subcmd in ("watch", "--watch"):
+            subcmd = "watch-text"
 
     if subcmd in ("pii-text", "pii-detect"):
         epilog = """
