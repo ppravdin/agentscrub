@@ -571,53 +571,56 @@ _SHORT_TEXT_DIRECT_REGEX_CHARS = 128
 # over-inclusive here is SAFE — a stray marker only means we run the (precise)
 # regex anyway — so we list a leading literal for every pattern below.
 _SHORT_TEXT_SECRET_MARKERS = (
-    "github_pat_",
-    "ghp_",
-    "gho_",
-    "ghu_",
-    "ghs_",
-    "ghr_",
-    "glpat-",
-    "sk-",
-    "sk_",
-    "pk_",
-    "rk-",
-    "rk_",
+    "GITHUB_PAT_",
+    "GHP_",
+    "GHO_",
+    "GHU_",
+    "GHS_",
+    "GHR_",
+    "GLPAT-",
+    "SK-",
+    "SK_",
+    "PK_",
+    "RK-",
+    "RK_",
     "GOCSPX-",
-    "npm_",
-    "xox",
-    "xapp-",
-    "hooks.slack.com",
+    "NPM_",
+    "XOX",
+    "XAPP-",
+    "HOOKS.SLACK.COM",
     "AKIA",
     "ASIA",
-    "AIza",
-    "hf_",
-    "dop_v1_",
+    "AIZA",
+    "HF_",
+    "DOP_V1_",
     "SG.",
-    "dapi",
-    "AccountKey=",
-    "eyJ",
+    "DAPI",
+    "ACCOUNTKEY",
+    "EYJ",
     "-----BEGIN",
-    "redis://",
-    "rediss://",
-    "postgres://",
-    "postgresql://",
-    "mysql://",
-    "mongodb://",
-    "mongodb+srv://",
-    "amqp://",
-    "amqps://",
+    "REDIS://",
+    "REDISS://",
+    "POSTGRES://",
+    "POSTGRESQL://",
+    "MYSQL://",
+    "MONGODB://",
+    "MONGODB+SRV://",
+    "AMQP://",
+    "AMQPS://",
     "REDIS",
     "POSTGRES",
     "MYSQL",
     "DATABASE",
-    "PASSWORD=",
-    "SECRET=",
-    "TOKEN=",
-    "KEY=",
-    "AUTH=",
-    "PW=",
-    "redis-cli",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+    "KEY",
+    "AUTH",
+    "PASS",
+    "CREDENTIAL",
+    "BEARER",
+    "PW",
+    "REDIS-CLI",
 )
 
 # In-process hot path for tiny terminal screen updates: redact the most-used
@@ -633,8 +636,6 @@ _SHORT_TEXT_SECRET_RE = re.compile(
         [
             # Database / Cache connection URIs with passwords (Redis, Postgres, MySQL, MongoDB, AMQP)
             r"(?:redis|rediss|postgres|postgresql|mysql|mongodb(?:\+srv)?|amqp|amqps)://[^:\s]*:[^@\s]+@[^/\s]+",
-            # Secret / Password / Key / Token assignment variables in shell / env / logs
-            r"(?:[A-Za-z0-9_]*(?:PASSWORD|PW|SECRET|TOKEN|KEY|PASS|AUTH)[A-Za-z0-9_]*)\s*=\s*(?:\"[^\"]+\"|'[^']+'|[^\s;]+)",
             # redis-cli -a password pattern
             r"redis-cli\s+-a\s+(?:\"[^\"]+\"|'[^']+'|[^\s;]+)",
             # GitHub / GitLab personal access tokens
@@ -671,6 +672,8 @@ _SHORT_TEXT_SECRET_RE = re.compile(
             r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
             # PEM private key header (flags the block; body is multiline)
             r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+            # Secret / Password / Key / Token assignment variables in shell / env / logs / JSON / YAML (matches = or :)
+            r"[\"']?(?:[A-Za-z0-9_]*(?:PASSWORD|PW|SECRET|TOKEN|KEY|PASS|AUTH|CREDENTIAL)[A-Za-z0-9_]*)[\"']?\s*(?:=\s*(?:\"[^\"]+\"|'[^']+'|[^\s;]+)|:\s*(?:\"[^\"]+\"|'[^']+'|(?!Bearer\b)[^\s;]+))",
         ]
     )
 )
@@ -740,9 +743,10 @@ def redact_short_text(
     if secrets:
         new, count = _redact_raw_line(new, secrets)
 
+    new_upper = new.upper()
     if (
         len(new) > _SHORT_TEXT_DIRECT_REGEX_CHARS
-        and not any(marker in new for marker in _SHORT_TEXT_SECRET_MARKERS)
+        and not any(marker in new_upper for marker in _SHORT_TEXT_SECRET_MARKERS)
     ):
         return new, count
 
@@ -767,9 +771,10 @@ def redact_short_text_prefix(
     if not text or not prefix_len:
         return "", 0, 0
 
+    text_upper = text.upper()
     if (
         len(text) > _SHORT_TEXT_DIRECT_REGEX_CHARS
-        and not any(marker in text for marker in _SHORT_TEXT_SECRET_MARKERS)
+        and not any(marker in text_upper for marker in _SHORT_TEXT_SECRET_MARKERS)
     ):
         return text[:prefix_len], prefix_len, 0
 

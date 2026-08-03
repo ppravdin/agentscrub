@@ -306,3 +306,29 @@ class TestShortTextRedaction:
         assert count == 1
         assert "mysecretpassword123" not in res
         assert REDACTED in res
+
+    def test_redacts_colon_separated_token(self) -> None:
+        from agentscrub.redact import redact_short_text
+        text = "+AICHE_DEBUG_TOKEN: PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po" not in res
+        assert REDACTED in res
+
+    def test_redacts_quoted_json_key(self) -> None:
+        from agentscrub.redact import redact_short_text
+        text = '"AICHE_DEBUG_TOKEN": "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"'
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po" not in res
+        assert REDACTED in res
+
+    def test_redacts_long_line_lowercase_key(self) -> None:
+        from agentscrub.redact import redact_short_text
+        padding = "padding_" * 16
+        text = f"{padding}AICHE_DEBUG_TOKEN=PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
+        assert len(text) > 128
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po" not in res
+        assert REDACTED in res
