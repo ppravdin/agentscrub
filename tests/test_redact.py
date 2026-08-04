@@ -326,9 +326,44 @@ class TestShortTextRedaction:
     def test_redacts_long_line_lowercase_key(self) -> None:
         from agentscrub.redact import redact_short_text
         padding = "padding_" * 16
-        text = f"{padding}AICHE_DEBUG_TOKEN=PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
+        text = f"{padding}api_key=PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
         assert len(text) > 128
         res, count = redact_short_text(text)
         assert count == 1
         assert "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po" not in res
         assert REDACTED in res
+
+    def test_redacts_lowercase_password_colon(self) -> None:
+        from agentscrub.redact import redact_short_text
+        text = "password: hunter2secretvalue_abcdefghij"
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert "hunter2secretvalue_abcdefghij" not in res
+        assert REDACTED in res
+
+    def test_redacts_bearer_tokens(self) -> None:
+        from agentscrub.redact import redact_short_text
+        t1 = "Authorization: Bearer PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf"
+        res1, count1 = redact_short_text(t1)
+        assert count1 == 1
+        assert "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf" not in res1
+        assert REDACTED in res1
+
+        t2 = "AUTH_TOKEN: Bearer PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf"
+        res2, count2 = redact_short_text(t2)
+        assert count2 == 1
+        assert "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf" not in res2
+        assert REDACTED in res2
+
+    def test_prevents_colon_false_positives(self) -> None:
+        from agentscrub.redact import redact_short_text
+        prose_samples = [
+            "API_KEY: not set",
+            "PUBLIC_KEY: ssh-rsa AAAA...",
+            "KEYWORDS: python, security",
+            "AUTH: ok",
+        ]
+        for line in prose_samples:
+            res, count = redact_short_text(line)
+            assert count == 0
+            assert res == line

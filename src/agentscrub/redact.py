@@ -611,15 +611,24 @@ _SHORT_TEXT_SECRET_MARKERS = (
     "POSTGRES",
     "MYSQL",
     "DATABASE",
-    "PASSWORD",
-    "SECRET",
-    "TOKEN",
-    "KEY",
-    "AUTH",
-    "PASS",
-    "CREDENTIAL",
+    "PASSWORD=",
+    "PASSWORD:",
+    "SECRET=",
+    "SECRET:",
+    "TOKEN=",
+    "TOKEN:",
+    "KEY=",
+    "KEY:",
+    "_KEY",
+    "AUTH=",
+    "AUTH:",
+    "PASS=",
+    "PASS:",
+    "CREDENTIAL=",
+    "CREDENTIAL:",
     "BEARER",
-    "PW",
+    "PW=",
+    "PW:",
     "REDIS-CLI",
 )
 
@@ -672,8 +681,10 @@ _SHORT_TEXT_SECRET_RE = re.compile(
             r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
             # PEM private key header (flags the block; body is multiline)
             r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+            # Bearer HTTP header / token pattern
+            r"(?:[Aa]uthorization:\s*)?[Bb]earer\s+[A-Za-z0-9._~+/-]{16,}={0,2}",
             # Secret / Password / Key / Token assignment variables in shell / env / logs / JSON / YAML (matches = or :)
-            r"[\"']?(?:[A-Za-z0-9_]*(?:PASSWORD|PW|SECRET|TOKEN|KEY|PASS|AUTH|CREDENTIAL)[A-Za-z0-9_]*)[\"']?\s*(?:=\s*(?:\"[^\"]+\"|'[^']+'|[^\s;]+)|:\s*(?:\"[^\"]+\"|'[^']+'|(?!Bearer\b)[^\s;]+))",
+            r"[\"']?(?i:[A-Za-z0-9_]*(?:PASSWORD|PW|SECRET|TOKEN|KEY|PASS|AUTH|CREDENTIAL)[A-Za-z0-9_]*)[\"']?\s*(?:=\s*(?:\"[^\"]+\"|'[^']+'|(?!gh[opusr]_|sk-|AIza|AKIA|github_pat_|glpat-|xox|xapp-|SG\.|AccountKey=|dop_v1_|npm_|hf_|dapi)[^\s;]+)|:\s*(?:\"[^\"]+\"|'[^']+'|(?!gh[opusr]_|sk-|AIza|AKIA|github_pat_|glpat-|xox|xapp-|SG\.|AccountKey=|dop_v1_|npm_|hf_|dapi)[A-Za-z0-9_@+/.-]{12,}))",
         ]
     )
 )
@@ -743,12 +754,9 @@ def redact_short_text(
     if secrets:
         new, count = _redact_raw_line(new, secrets)
 
-    new_upper = new.upper()
-    if (
-        len(new) > _SHORT_TEXT_DIRECT_REGEX_CHARS
-        and not any(marker in new_upper for marker in _SHORT_TEXT_SECRET_MARKERS)
-    ):
-        return new, count
+    if len(new) > _SHORT_TEXT_DIRECT_REGEX_CHARS:
+        if not any(marker in new.upper() for marker in _SHORT_TEXT_SECRET_MARKERS):
+            return new, count
 
     new, regex_count = _SHORT_TEXT_SECRET_RE.subn(REDACTED, new)
     count += regex_count
@@ -771,12 +779,9 @@ def redact_short_text_prefix(
     if not text or not prefix_len:
         return "", 0, 0
 
-    text_upper = text.upper()
-    if (
-        len(text) > _SHORT_TEXT_DIRECT_REGEX_CHARS
-        and not any(marker in text_upper for marker in _SHORT_TEXT_SECRET_MARKERS)
-    ):
-        return text[:prefix_len], prefix_len, 0
+    if len(text) > _SHORT_TEXT_DIRECT_REGEX_CHARS:
+        if not any(marker in text.upper() for marker in _SHORT_TEXT_SECRET_MARKERS):
+            return text[:prefix_len], prefix_len, 0
 
     matches = list(_SHORT_TEXT_SECRET_RE.finditer(text))
     if high_entropy:
