@@ -7,11 +7,20 @@ import os
 import subprocess
 import sys
 
+from pathlib import Path
+
 import pytest
 
 
+def _make_env(fake_home) -> dict[str, str]:
+    src_dir = str(Path(__file__).resolve().parent.parent / "src")
+    pythonpath = os.environ.get("PYTHONPATH", "")
+    new_path = f"{src_dir}:{pythonpath}" if pythonpath else src_dir
+    return {**os.environ, "HOME": str(fake_home), "PYTHONPATH": new_path}
+
+
 def test_list_tools_exits_zero(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "--list-tools"],
         capture_output=True,
@@ -23,7 +32,7 @@ def test_list_tools_exits_zero(fake_home) -> None:
 
 
 def test_main_help(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "--help"],
         capture_output=True,
@@ -38,7 +47,7 @@ def test_main_help(fake_home) -> None:
 
 
 def test_stream_help_lists_entropy_option(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "watch-text", "--help"],
         capture_output=True,
@@ -51,7 +60,7 @@ def test_stream_help_lists_entropy_option(fake_home) -> None:
 
 
 def test_pii_help_lists_optional_install(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "pii-text", "--help"],
         capture_output=True,
@@ -71,7 +80,7 @@ def test_pii_commands_explain_optional_install_when_unavailable(fake_home, comma
     ):
         pytest.skip("PII dependencies are installed")
 
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", command],
         input="Contact Alex at alex@example.com",
@@ -86,7 +95,7 @@ def test_pii_commands_explain_optional_install_when_unavailable(fake_home, comma
 
 
 def test_redact_text_redacts_stdin(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "redact-text", "--count"],
@@ -102,7 +111,7 @@ def test_redact_text_redacts_stdin(fake_home) -> None:
 
 
 def test_redact_text_entropy_mode_redacts_unknown_token(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     token = "ZxPrtgigTMcYHx3@NtXyMMoipkzTrHWfzTY4PsT6gg83xjL3Jxuci@mX7u_32NeN"
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "redact-text", "--entropy", "--count"],
@@ -118,7 +127,7 @@ def test_redact_text_entropy_mode_redacts_unknown_token(fake_home) -> None:
 
 
 def test_watch_text_redacts_stream(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "watch-text", "--alert", "--count"],
@@ -135,7 +144,7 @@ def test_watch_text_redacts_stream(fake_home) -> None:
 
 
 def test_watch_alias_works(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     token = "AICHE_DEBUG_TOKEN=PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "--watch", "--alert"],
@@ -150,7 +159,7 @@ def test_watch_alias_works(fake_home) -> None:
 
 
 def test_watch_text_exit_on_detect(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
     r = subprocess.run(
         [sys.executable, "-m", "agentscrub.cli", "watch-text", "--exit-on-detect"],
@@ -166,7 +175,7 @@ def test_watch_text_exit_on_detect(fake_home) -> None:
 
 
 def test_watch_text_redacts_secret_crossing_forced_boundary(fake_home) -> None:
-    env = {**os.environ, "HOME": str(fake_home)}
+    env = _make_env(fake_home)
     token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
     text = ("x" * 60) + token + ("!" * 40)
     r = subprocess.run(
