@@ -17,9 +17,9 @@ PYPI_JSON_URL = "https://pypi.org/pypi/agentscrub/json"
 
 
 def parse_version_tuple(v_str: str) -> tuple[int, ...]:
-    """Parse version string like '1.1.34' into integer tuple (1, 1, 34)."""
-    clean = re.sub(r"[^0-9.]", "", v_str)
-    parts = [int(p) for p in clean.split(".") if p.isdigit()]
+    """Parse version string like '1.1.34' or '1.1.10rc1' into integer tuple (1, 1, 10)."""
+    base = re.split(r"(?:a|b|rc|dev)", v_str, maxsplit=1, flags=re.IGNORECASE)[0]
+    parts = [int(p) for p in re.findall(r"\d+", base)]
     return tuple(parts) if parts else (0, 0, 0)
 
 
@@ -36,9 +36,9 @@ def fetch_latest_pypi_version(timeout: float = 5.0) -> str:
 
 def detect_installer() -> list[str]:
     """Detect if agentscrub should be updated via pipx or sys.executable pip."""
-    # Check if installed via pipx
+    prefix = str(Path(sys.prefix).resolve())
     executable = str(Path(sys.executable).resolve())
-    if "pipx" in executable or "pipx" in os.environ.get("PATH", "").lower():
+    if "pipx" in prefix or "/pipx/" in executable or "pipx/venvs" in executable:
         pipx_path = shutil.which("pipx")
         if pipx_path:
             return [pipx_path, "upgrade", "agentscrub"]

@@ -16,6 +16,8 @@ def test_parse_version_tuple() -> None:
     assert parse_version_tuple("1.1.34") == (1, 1, 34)
     assert parse_version_tuple("v2.0.1") == (2, 0, 1)
     assert parse_version_tuple("0.9") == (0, 9)
+    assert parse_version_tuple("1.1.10rc1") == (1, 1, 10)
+    assert parse_version_tuple("1.1.10rc1") < parse_version_tuple("1.1.36")
 
 
 @patch("urllib.request.urlopen")
