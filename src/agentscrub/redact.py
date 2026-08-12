@@ -565,72 +565,6 @@ def _redact_raw_line(line: str, secrets: frozenset[str] | set[str]) -> tuple[str
 
 _SHORT_TEXT_MAX_CHARS = 8192
 _SHORT_TEXT_MAX_LINES = 8
-_SHORT_TEXT_DIRECT_REGEX_CHARS = 128
-# Literal substrings that gate the long-text (> _SHORT_TEXT_DIRECT_REGEX_CHARS)
-# fast path: if a big chunk contains none of these, skip the regex. Being
-# over-inclusive here is SAFE — a stray marker only means we run the (precise)
-# regex anyway — so we list a leading literal for every pattern below.
-_SHORT_TEXT_SECRET_MARKERS = (
-    "GITHUB_PAT_",
-    "GHP_",
-    "GHO_",
-    "GHU_",
-    "GHS_",
-    "GHR_",
-    "GLPAT-",
-    "SK-",
-    "SK_",
-    "PK_",
-    "RK-",
-    "RK_",
-    "GOCSPX-",
-    "NPM_",
-    "XOX",
-    "XAPP-",
-    "HOOKS.SLACK.COM",
-    "AKIA",
-    "ASIA",
-    "AIZA",
-    "HF_",
-    "DOP_V1_",
-    "SG.",
-    "DAPI",
-    "ACCOUNTKEY",
-    "EYJ",
-    "-----BEGIN",
-    "REDIS://",
-    "REDISS://",
-    "POSTGRES://",
-    "POSTGRESQL://",
-    "MYSQL://",
-    "MONGODB://",
-    "MONGODB+SRV://",
-    "AMQP://",
-    "AMQPS://",
-    "REDIS",
-    "POSTGRES",
-    "MYSQL",
-    "DATABASE",
-    "PASSWORD=",
-    "PASSWORD:",
-    "SECRET=",
-    "SECRET:",
-    "TOKEN=",
-    "TOKEN:",
-    "KEY=",
-    "KEY:",
-    "_KEY",
-    "AUTH=",
-    "AUTH:",
-    "PASS=",
-    "PASS:",
-    "CREDENTIAL=",
-    "CREDENTIAL:",
-    "BEARER",
-    "PW=",
-    "PW:",
-    "REDIS-CLI",
-)
 
 # In-process hot path for tiny terminal screen updates: redact the most-used
 # secret families before output streams anywhere (e.g. to the cloud dashboard).
@@ -638,8 +572,35 @@ _SHORT_TEXT_SECRET_MARKERS = (
 # with a minimum length — so the render path stays false-positive-free. Broad
 # key=value / high-entropy heuristics belong to the full scanner/report flow
 # (gitleaks/trufflehog/titus) where matches can be reviewed before a write.
-# Specific prefixes come before generic ones so the generic alt never swallows
-# and half-redacts a more specific token.
+# Specific prefixes come before generic ones, while the generic assignment
+# branch remains a fallback for values that merely resemble those prefixes.
+# A period terminates ordinary vendor tokens in prose, but remains a valid
+# continuation character for token formats whose grammar contains periods.
+_VENDOR_TOKEN_END = r"(?![A-Za-z0-9_-])"
+_VENDOR_B64_END = r"(?![A-Za-z0-9+/=-])"
+_VENDOR_DOTTED_END = r"(?![A-Za-z0-9_@+/\.\-=])"
+_VENDOR_ASSIGNMENT_END = r"(?=[\s;,\]}\"']|$)"
+_GENERIC_ASSIGNMENT_EXCLUSION = (
+    r"(?!(?:[\"']?)(?i:"
+    r"github_pat_[A-Za-z0-9_]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"gh[opusr]_[A-Za-z0-9_]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"glpat-[A-Za-z0-9_-]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"sk-proj-[A-Za-z0-9_-]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"sk-ant-[A-Za-z0-9_-]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"sk-[A-Za-z0-9]{32,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"AIza[0-9A-Za-z_-]{35}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"GOCSPX-[A-Za-z0-9_-]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"xapp-[0-9]-[A-Za-z0-9-]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"(?:AKIA|ASIA)[A-Z0-9]{16}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"npm_[A-Za-z0-9]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"hf_[A-Za-z0-9]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"dop_v1_[a-f0-9]{40,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"dapi[a-f0-9]{32,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}" + _VENDOR_ASSIGNMENT_END + r"|"
+    r"AccountKey=[A-Za-z0-9+/=]{40,}" + _VENDOR_ASSIGNMENT_END + r"))"
+)
 _SHORT_TEXT_SECRET_RE = re.compile(
     "|".join(
         [
@@ -648,43 +609,81 @@ _SHORT_TEXT_SECRET_RE = re.compile(
             # redis-cli -a password pattern
             r"redis-cli\s+-a\s+(?:\"[^\"]+\"|'[^']+'|[^\s;]+)",
             # GitHub / GitLab personal access tokens
-            r"github_pat_[A-Za-z0-9_]{20,}",
-            r"gh[opusr]_[A-Za-z0-9_]{20,}",
-            r"glpat-[A-Za-z0-9_-]{20,}",
+            r"github_pat_[A-Za-z0-9_]{20,}" + _VENDOR_TOKEN_END,
+            r"gh[opusr]_[A-Za-z0-9_]{20,}" + _VENDOR_TOKEN_END,
+            r"glpat-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
             # OpenAI / Anthropic (project + classic) keys
-            r"sk-proj-[A-Za-z0-9_-]{20,}",
-            r"sk-ant-[A-Za-z0-9_-]{20,}",
-            r"sk-[A-Za-z0-9]{32,}",
+            r"sk-proj-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
+            r"sk-ant-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
+            r"sk-[A-Za-z0-9]{32,}" + _VENDOR_TOKEN_END,
             # Stripe / Square style live|test keys (underscore delimiter)
-            r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",
+            r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}" + _VENDOR_TOKEN_END,
             # Google API key + OAuth client secret
-            r"AIza[0-9A-Za-z_-]{35}",
-            r"GOCSPX-[A-Za-z0-9_-]{20,}",
+            r"AIza[0-9A-Za-z_-]{35}" + _VENDOR_TOKEN_END,
+            r"GOCSPX-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
             # Slack bot/app tokens + incoming webhooks
-            r"xox[baprs]-[A-Za-z0-9-]{10,}",
-            r"xapp-[0-9]-[A-Za-z0-9-]{20,}",
+            r"xox[baprs]-[A-Za-z0-9-]{10,}" + _VENDOR_TOKEN_END,
+            r"xapp-[0-9]-[A-Za-z0-9-]{20,}" + _VENDOR_TOKEN_END,
             r"https://hooks\.slack\.com/services/[A-Za-z0-9/]{20,}",
             # AWS access key id
-            r"(?:AKIA|ASIA)[A-Z0-9]{16}",
+            r"(?:AKIA|ASIA)[A-Z0-9]{16}" + _VENDOR_TOKEN_END,
             # npm / HuggingFace / DigitalOcean / Databricks
-            r"npm_[A-Za-z0-9]{20,}",
-            r"hf_[A-Za-z0-9]{20,}",
-            r"dop_v1_[a-f0-9]{40,}",
-            r"dapi[a-f0-9]{32,}",
+            r"npm_[A-Za-z0-9]{20,}" + _VENDOR_TOKEN_END,
+            r"hf_[A-Za-z0-9]{20,}" + _VENDOR_TOKEN_END,
+            r"dop_v1_[a-f0-9]{40,}" + _VENDOR_TOKEN_END,
+            r"dapi[a-f0-9]{32,}" + _VENDOR_TOKEN_END,
             # SendGrid
-            r"SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}",
+            r"SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
             # Telegram bot token
-            r"\d{8,10}:[A-Za-z0-9_-]{35}",
+            r"\d{8,10}:[A-Za-z0-9_-]{35}" + _VENDOR_TOKEN_END,
             # Azure Storage connection string secret
-            r"AccountKey=[A-Za-z0-9+/=]{40,}",
+            r"AccountKey=[A-Za-z0-9+/=]{40,}" + _VENDOR_B64_END,
             # JSON Web Token
-            r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+            r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}" + _VENDOR_TOKEN_END,
             # PEM private key header (flags the block; body is multiline)
             r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
             # Bearer HTTP header / token pattern
-            r"(?:[Aa]uthorization:\s*)?[Bb]earer\s+[A-Za-z0-9._~+/-]{16,}={0,2}",
-            # Secret / Password / Key / Token assignment variables in shell / env / logs / JSON / YAML (matches = or :)
-            r"[\"']?(?i:[A-Za-z0-9_]*(?:PASSWORD|PW|SECRET|TOKEN|KEY|PASS|AUTH|CREDENTIAL)[A-Za-z0-9_]*)[\"']?\s*(?:=\s*(?:\"[^\"]+\"|'[^']+'|(?!gh[opusr]_|sk-|AIza|AKIA|github_pat_|glpat-|xox|xapp-|SG\.|AccountKey=|dop_v1_|npm_|hf_|dapi)[^\s;]+)|:\s*(?:\"[^\"]+\"|'[^']+'|(?!gh[opusr]_|sk-|AIza|AKIA|github_pat_|glpat-|xox|xapp-|SG\.|AccountKey=|dop_v1_|npm_|hf_|dapi)[A-Za-z0-9_@+/.-]{12,}))",
+            r"(?:(?i:authorization):\s*)?(?i:bearer)\s+[A-Za-z0-9._~+/-]{16,}={0,2}" + _VENDOR_DOTTED_END,
+            # Candidate assignment keys are normalized semantically below;
+            # keeping this grammar broad covers snake_case, kebab-case, and
+            # camelCase without making the regex responsible for key meaning.
+            r"(?P<generic_prefix>(?<![A-Za-z0-9])"
+            r"(?P<generic_key>[\"']?[A-Za-z0-9][A-Za-z0-9_-]{0,127}[\"']?)"
+            r"\s*(?:=|:)\s*)"
+            + _GENERIC_ASSIGNMENT_EXCLUSION
+            + r"(?P<generic_value>[\"'][^\"'\r\n\s]{16,}[\"']|[^\s;,\]}]{16,})",
+        ]
+    )
+)
+
+_SHORT_TEXT_VENDOR_RE = re.compile(
+    "|".join(
+        [
+            r"(?:redis|rediss|postgres|postgresql|mysql|mongodb(?:\+srv)?|amqp|amqps)://[^:\s]*:[^@\s]+@[^/\s]+",
+            r"redis-cli\s+-a\s+(?:\"[^\"]+\"|'[^']+'|[^\s;]+)",
+            r"github_pat_[A-Za-z0-9_]{20,}" + _VENDOR_TOKEN_END,
+            r"gh[opusr]_[A-Za-z0-9_]{20,}" + _VENDOR_TOKEN_END,
+            r"glpat-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
+            r"sk-proj-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
+            r"sk-ant-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
+            r"sk-[A-Za-z0-9]{32,}" + _VENDOR_TOKEN_END,
+            r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}" + _VENDOR_TOKEN_END,
+            r"AIza[0-9A-Za-z_-]{35}" + _VENDOR_TOKEN_END,
+            r"GOCSPX-[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
+            r"xox[baprs]-[A-Za-z0-9-]{10,}" + _VENDOR_TOKEN_END,
+            r"xapp-[0-9]-[A-Za-z0-9-]{20,}" + _VENDOR_TOKEN_END,
+            r"https://hooks\.slack\.com/services/[A-Za-z0-9/]{20,}",
+            r"(?:AKIA|ASIA)[A-Z0-9]{16}" + _VENDOR_TOKEN_END,
+            r"npm_[A-Za-z0-9]{20,}" + _VENDOR_TOKEN_END,
+            r"hf_[A-Za-z0-9]{20,}" + _VENDOR_TOKEN_END,
+            r"dop_v1_[a-f0-9]{40,}" + _VENDOR_TOKEN_END,
+            r"dapi[a-f0-9]{32,}" + _VENDOR_TOKEN_END,
+            r"SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}" + _VENDOR_TOKEN_END,
+            r"\d{8,10}:[A-Za-z0-9_-]{35}" + _VENDOR_TOKEN_END,
+            r"AccountKey=[A-Za-z0-9+/=]{40,}" + _VENDOR_B64_END,
+            r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}" + _VENDOR_TOKEN_END,
+            r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----",
+            r"(?:(?i:authorization):\s*)?(?i:bearer)\s+[A-Za-z0-9._~+/-]{16,}={0,2}" + _VENDOR_DOTTED_END,
         ]
     )
 )
@@ -694,7 +693,6 @@ _HIGH_ENTROPY_CANDIDATE_RE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9_@+/.-]{30,}[A-Za-z0-9]={0,2}"
     r"(?![A-Za-z0-9_@+/.-])"
 )
-
 
 def _looks_high_entropy(value: str) -> bool:
     """Return true for long, varied token-like strings, not normal prose."""
@@ -710,6 +708,108 @@ def _looks_high_entropy(value: str) -> bool:
         for count in counts.values()
     )
     return entropy >= 4.0
+
+
+_STRONG_KEY_SEGMENTS = frozenset({
+    "password", "pw", "secret", "token", "pass", "auth", "credential",
+})
+_KEY_QUALIFIER_SEGMENTS = frozenset({
+    "access", "api", "app", "application", "aws", "client", "database", "db",
+    "encryption", "github", "master", "npm", "openai", "private", "redis",
+    "refresh", "secret", "session", "signing", "ssh", "stripe",
+})
+_KEY_METADATA_SUFFIXES = frozenset({
+    ("expires",), ("expires", "at"), ("type",), ("name",),
+})
+
+
+def _assignment_key_segments(key: str | None) -> tuple[tuple[str, ...], bool]:
+    """Normalize snake, kebab, camel, and acronym-leading key names."""
+    raw_key = (key or "").strip("\"'")
+    with_acronym_boundary = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", raw_key)
+    with_camel_boundary = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", with_acronym_boundary)
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", with_camel_boundary).lower().strip("_")
+    return tuple(segment for segment in normalized.split("_") if segment), bool(
+        re.search(r"[_-]", raw_key)
+    )
+
+
+def _is_credential_key(key: str | None) -> bool:
+    segments, has_explicit_separator = _assignment_key_segments(key)
+    if not segments:
+        return False
+    if tuple(segments[-2:]) in _KEY_METADATA_SUFFIXES or (segments[-1],) in _KEY_METADATA_SUFFIXES:
+        return False
+    if "public" in segments and "key" in segments:
+        return False
+    if _STRONG_KEY_SEGMENTS.intersection(segments):
+        return True
+    if "key" not in segments:
+        return False
+    if len(segments) == 1 or has_explicit_separator:
+        return True
+    return bool(_KEY_QUALIFIER_SEGMENTS.intersection(segments[:-1]))
+
+
+def _looks_like_assignment_value(value: str | None, key: str | None = None) -> bool:
+    """Return true for a plausible generic assignment secret.
+
+    Generic key assignments are intentionally conservative: unlike exact
+    vendor token patterns, they must have enough length and character variety
+    to avoid replacing ordinary JSON/YAML values such as ``"banana"``.
+    """
+    if value is None:
+        return False
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    if not _is_credential_key(key):
+        return False
+    normalized_value = re.sub(r"[^a-z0-9]+", "", value.lower())
+    if any(
+        marker in normalized_value
+        for marker in ("placeholder", "changeme", "notset", "dummyvalue", "examplevalue")
+    ):
+        return False
+    if len(value) < 16 or any(char.isspace() for char in value):
+        return False
+    if len(set(value)) < 8:
+        return False
+    segments, _ = _assignment_key_segments(key)
+    strong_key = bool(_STRONG_KEY_SEGMENTS.intersection(segments))
+    if strong_key:
+        return True
+    classes = sum(
+        (
+            any(char.islower() for char in value),
+            any(char.isupper() for char in value),
+            any(char.isdigit() for char in value),
+            any(not char.isalnum() for char in value),
+        )
+    )
+    return classes >= 2
+
+
+def _is_short_secret_match(match: re.Match[str]) -> bool:
+    """Return whether a regex match should be replaced."""
+    generic_value = match.groupdict().get("generic_value")
+    if generic_value is not None:
+        return _looks_like_assignment_value(generic_value, match.group("generic_key"))
+    return True
+
+
+def _short_secret_subn(text: str) -> tuple[str, int]:
+    count = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal count
+        if not _is_short_secret_match(match):
+            return match.group()
+        count += 1
+        return REDACTED
+
+    new = _SHORT_TEXT_SECRET_RE.sub(replace, text)
+    new, vendor_count = _SHORT_TEXT_VENDOR_RE.subn(REDACTED, new)
+    return new, count + vendor_count
 
 
 def _high_entropy_subn(text: str) -> tuple[str, int]:
@@ -754,11 +854,11 @@ def redact_short_text(
     if secrets:
         new, count = _redact_raw_line(new, secrets)
 
-    if len(new) > _SHORT_TEXT_DIRECT_REGEX_CHARS:
-        if not any(marker in new.upper() for marker in _SHORT_TEXT_SECRET_MARKERS):
-            return new, count
-
-    new, regex_count = _SHORT_TEXT_SECRET_RE.subn(REDACTED, new)
+    # The input is bounded by _SHORT_TEXT_MAX_CHARS/_SHORT_TEXT_MAX_LINES, so
+    # scanning it is cheap. Do not use a marker gate here: generic assignment
+    # keys can have arbitrary prefixes/suffixes and high-entropy mode has no
+    # known marker at all. A gate must be a sound superset of every detector.
+    new, regex_count = _short_secret_subn(new)
     count += regex_count
     if high_entropy:
         new, entropy_count = _high_entropy_subn(new)
@@ -779,11 +879,12 @@ def redact_short_text_prefix(
     if not text or not prefix_len:
         return "", 0, 0
 
-    if len(text) > _SHORT_TEXT_DIRECT_REGEX_CHARS:
-        if not any(marker in text.upper() for marker in _SHORT_TEXT_SECRET_MARKERS):
-            return text[:prefix_len], prefix_len, 0
-
-    matches = list(_SHORT_TEXT_SECRET_RE.finditer(text))
+    matches = [
+        match
+        for match in _SHORT_TEXT_SECRET_RE.finditer(text)
+        if _is_short_secret_match(match)
+    ]
+    matches.extend(_SHORT_TEXT_VENDOR_RE.finditer(text))
     if high_entropy:
         matches.extend(
             match for match in _HIGH_ENTROPY_CANDIDATE_RE.finditer(text)

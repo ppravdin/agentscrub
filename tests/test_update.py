@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+from packaging.version import Version
 
 from agentscrub.updater import (
     detect_installer,
@@ -13,11 +17,13 @@ from agentscrub.updater import (
 
 
 def test_parse_version_tuple() -> None:
-    assert parse_version_tuple("1.1.34") == (1, 1, 34)
-    assert parse_version_tuple("v2.0.1") == (2, 0, 1)
-    assert parse_version_tuple("0.9") == (0, 9)
-    assert parse_version_tuple("1.1.10rc1") == (1, 1, 10)
+    assert parse_version_tuple("1.1.34") == Version("1.1.34")
+    assert parse_version_tuple("v2.0.1") == Version("2.0.1")
+    assert parse_version_tuple("0.9") == Version("0.9")
+    assert parse_version_tuple("1.1.10rc1") == Version("1.1.10rc1")
     assert parse_version_tuple("1.1.10rc1") < parse_version_tuple("1.1.36")
+    assert parse_version_tuple("1.1.10rc1") < parse_version_tuple("1.1.10")
+    assert parse_version_tuple("1.1.10") < parse_version_tuple("1.1.10.post1")
 
 
 @patch("urllib.request.urlopen")
@@ -35,6 +41,13 @@ def test_detect_installer() -> None:
     cmd = detect_installer()
     assert isinstance(cmd, list)
     assert len(cmd) >= 3
+
+
+@patch("agentscrub.updater.shutil.which", return_value="/usr/bin/pipx")
+@patch("agentscrub.updater.sys.prefix", "/opt/acme-pipx-tools/venv")
+def test_detect_installer_ignores_unrelated_pipx_path(_mock_which) -> None:
+    cmd = detect_installer()
+    assert cmd[0:3] == [sys.executable, "-m", "pip"]
 
 
 @patch("agentscrub.updater.fetch_latest_pypi_version")
@@ -61,3 +74,51 @@ def test_run_update_executes_installer(mock_fetch, mock_subproc) -> None:
     res = run_update(check_only=False, yes=True)
     assert res == 0
     assert mock_subproc.called
+
+
+@patch("agentscrub.updater.detect_installer", return_value=[sys.executable, "-m", "pip", "install"])
+@patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("subprocess.run")
+def test_run_update_retries_only_for_pep668(mock_run, _mock_fetch, _mock_detect) -> None:
+    mock_run.side_effect = [
+        SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="error: externally-managed-environment",
+        ),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ]
+
+    assert run_update(yes=True) == 0
+    assert mock_run.call_count == 2
+    assert "--break-system-packages" in mock_run.call_args.args[0]
+
+
+@patch("agentscrub.updater.detect_installer", return_value=[sys.executable, "-m", "pip", "install"])
+@patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("subprocess.run")
+def test_run_update_does_not_retry_unrelated_pip_failure(mock_run, _mock_fetch, _mock_detect) -> None:
+    mock_run.return_value = SimpleNamespace(
+        returncode=1,
+        stdout="",
+        stderr="Could not find a matching distribution",
+    )
+
+    assert run_update(yes=True) == 1
+    assert mock_run.call_count == 1
+
+
+@patch("agentscrub.updater.detect_installer", return_value=[sys.executable, "-m", "pip", "install"])
+@patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("subprocess.run")
+def test_run_update_replays_installer_output(mock_run, _mock_fetch, _mock_detect, capsys) -> None:
+    mock_run.return_value = SimpleNamespace(
+        returncode=1,
+        stdout="download details\n",
+        stderr="pip failed\n",
+    )
+
+    assert run_update(yes=True) == 1
+    captured = capsys.readouterr()
+    assert "download details" in captured.out
+    assert "pip failed" in captured.err

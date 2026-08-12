@@ -283,6 +283,90 @@ class TestRedactSqlite:
 
 
 class TestShortTextRedaction:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"monkey": "banana"}',
+            '{"hockey": "regular_value"}',
+            'TURKEY: "sandwich"',
+        ],
+    )
+    def test_colon_assignments_require_secret_key_segments_and_strong_values(
+        self, text: str
+    ) -> None:
+        res, count = redact_short_text(text)
+        assert count == 0
+        assert res == text
+
+    def test_long_text_assignment_is_not_hidden_by_marker_gate(self) -> None:
+        secret = "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
+        text = ("x" * 140) + f"api_token_value={secret}"
+        res, count = redact_short_text(text)
+        assert count == 1
+        assert secret not in res
+        assert res.startswith("x" * 140 + "api_")
+
+    def test_bearer_scheme_is_case_insensitive(self) -> None:
+        token = "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf"
+        res, count = redact_short_text(f"BEARER {token}")
+        assert count == 1
+        assert token not in res
+
+    def test_vendor_like_value_falls_back_to_generic_redaction(self) -> None:
+        value = "sk-abcdefghijklmnop-qrstuvwxyz-1234567890"
+        res, count = redact_short_text(f"api_token={value}")
+        assert count == 1
+        assert value not in res
+        assert res == REDACTED
+
+    @pytest.mark.parametrize("suffix", ["-extraSECRET", "/extraSECRET", "=extraSECRET", ".extraSECRET"])
+    def test_vendor_prefix_with_suffix_falls_back_to_whole_value(self, suffix: str) -> None:
+        value = "ghp_abcdefghijklmnopqrstuvwxyz1234567890" + suffix
+        res, count = redact_short_text(f"api_token={value}")
+        assert count == 1
+        assert value not in res
+        assert res == REDACTED
+
+    def test_vendor_token_followed_by_sentence_period_is_redacted(self) -> None:
+        token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+        res, count = redact_short_text(f"leaked {token}.")
+        assert count == 1
+        assert token not in res
+        assert res.endswith(".")
+
+    @pytest.mark.parametrize(
+        "key",
+        ["accessToken", "clientSecret", "apiKey", "dbPassword", "tokenValue", "secretValue", "APIKey", "JWTSecret"],
+    )
+    def test_redacts_camel_case_credential_keys(self, key: str) -> None:
+        value = "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
+        res, count = redact_short_text(f'{{"{key}": "{value}"}}')
+        assert count == 1
+        assert value not in res
+
+    @pytest.mark.parametrize("key", ["accessTokenExpires", "refreshTokenExpiresAt", "tokenType", "secretName", "monKey"])
+    def test_ignores_metadata_and_ambiguous_camel_keys(self, key: str) -> None:
+        value = "2026-08-12T12:34:56Z"
+        res, count = redact_short_text(f'{{"{key}": "{value}"}}')
+        assert count == 0
+        assert res == f'{{"{key}": "{value}"}}'
+
+    def test_assignment_heuristic_uses_key_semantics(self) -> None:
+        password = "qjzmxncbvlasdfgh"
+        res, count = redact_short_text(f"PASSWORD: {password}")
+        assert count == 1
+        assert password not in res
+
+        public_key = "AAAAB3NzaC1yc2EAAAADAQABAAABAQC7"
+        res, count = redact_short_text(f"PUBLIC_KEY: {public_key}")
+        assert count == 0
+        assert res == f"PUBLIC_KEY: {public_key}"
+
+        placeholder = "ExamplePlaceholder1234"
+        res, count = redact_short_text(f"TOKEN: {placeholder}")
+        assert count == 0
+        assert res == f"TOKEN: {placeholder}"
+
     def test_redacts_redis_url(self) -> None:
         from agentscrub.redact import redact_short_text
         text = "REDIS_URL: redis://:b27f91a87b9dce7f0f3dc9fe42a50d38f223e4c26f435310247bf1114b1384eb@dokku-redis-aiche-redis:6379"

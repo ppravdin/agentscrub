@@ -15,7 +15,7 @@ import pytest
 def _make_env(fake_home) -> dict[str, str]:
     src_dir = str(Path(__file__).resolve().parent.parent / "src")
     pythonpath = os.environ.get("PYTHONPATH", "")
-    new_path = f"{src_dir}:{pythonpath}" if pythonpath else src_dir
+    new_path = f"{src_dir}{os.pathsep}{pythonpath}" if pythonpath else src_dir
     return {**os.environ, "HOME": str(fake_home), "PYTHONPATH": new_path}
 
 
