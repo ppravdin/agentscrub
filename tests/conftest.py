@@ -8,6 +8,16 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cache_db(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """No test may read or write the real ~/.agentscrub/state.db."""
+    import agentscrub.cache as cache
+
+    monkeypatch.setattr(
+        cache, "_CACHE_DB", tmp_path_factory.mktemp("cachedb") / "state.db"
+    )
+
+
 @pytest.fixture
 def fake_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Redirect Path.home() and HOME to a temp directory."""
