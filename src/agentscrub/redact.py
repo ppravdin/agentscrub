@@ -1014,29 +1014,33 @@ def redact_sqlite(
                     if not text_cols:
                         continue
                     col_list = ", ".join(_sqlite_ident(c) for c in text_cols)
-                    rows = con.execute(
+                    cur = con.execute(
                         f"SELECT rowid, {col_list} FROM {table_sql}"
-                    ).fetchall()
-                    for row in rows:
-                        rowid = row[0]
-                        for i, val in enumerate(row[1:]):
-                            if not val or not isinstance(val, str):
-                                continue
-                            if not any(s in val for s in secrets):
-                                continue
-                            new_val, n = val, 0
-                            for s in secrets:
-                                if s in new_val:
-                                    n += new_val.count(s)
-                                    new_val = new_val.replace(s, REDACTED)
-                            if n:
-                                db_count += n
-                                if not dry_run:
-                                    con.execute(
-                                        f"UPDATE {table_sql} SET {_sqlite_ident(text_cols[i])} = ?"
-                                        " WHERE rowid = ?",
-                                        (new_val, rowid),
-                                    )
+                    )
+                    while True:
+                        rows = cur.fetchmany(500)
+                        if not rows:
+                            break
+                        for row in rows:
+                            rowid = row[0]
+                            for i, val in enumerate(row[1:]):
+                                if not val or not isinstance(val, str):
+                                    continue
+                                if not any(s in val for s in secrets):
+                                    continue
+                                new_val, n = val, 0
+                                for s in secrets:
+                                    if s in new_val:
+                                        n += new_val.count(s)
+                                        new_val = new_val.replace(s, REDACTED)
+                                if n:
+                                    db_count += n
+                                    if not dry_run:
+                                        con.execute(
+                                            f"UPDATE {table_sql} SET {_sqlite_ident(text_cols[i])} = ?"
+                                            " WHERE rowid = ?",
+                                            (new_val, rowid),
+                                        )
                 if not dry_run and db_count:
                     con.commit()
                 con.close()
