@@ -197,10 +197,24 @@ def collect(targets: list[ScanTarget]) -> tuple[set[str], dict[str, int]]:
 
 
 def all_typed(by_tool: dict[str, dict[str, str]]) -> dict[str, str]:
-    """Merge all per-tool {secret: label} dicts into one map."""
+    """Merge all per-tool {secret: label} dicts into one map.
+
+    When tools disagree, a label the redaction allowlist trusts wins over one
+    it does not. Plain last-wins let Titus's "GitHub Personal Access Token"
+    override gitleaks's "github-pat", which silently demoted a real token to
+    report-only so `run` never redacted it.
+    """
+    from .redact import _short_label, is_high_precision_label
+
+    def trusted(label: str) -> bool:
+        return is_high_precision_label(_short_label(label))
+
     merged: dict[str, str] = {}
     for d in by_tool.values():
-        merged.update(d)
+        for secret, label in d.items():
+            cur = merged.get(secret)
+            if cur is None or trusted(label) or not trusted(cur):
+                merged[secret] = label
     return merged
 
 
