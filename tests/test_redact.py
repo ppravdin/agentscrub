@@ -281,6 +281,36 @@ class TestRedactSqlite:
         assert sample_secret not in val
         assert REDACTED in val
 
+    def test_redacts_every_row_across_pagination_batches(
+        self, tmp_path: Path, sample_secret: str
+    ) -> None:
+        """Rows are read in batches while UPDATEs run; none may be skipped."""
+        dest = tmp_path / "big.db"
+        con = sqlite3.connect(dest)
+        con.execute("CREATE TABLE msgs (id INTEGER PRIMARY KEY, data TEXT)")
+        n_rows = 1000  # several pages of the internal batch size
+        con.executemany(
+            "INSERT INTO msgs(data) VALUES (?)",
+            [(f"row {i} " + "x" * 200 + f" key={sample_secret}",) for i in range(n_rows)],
+        )
+        con.commit()
+        con.close()
+
+        target = ScanTarget(path=tmp_path, tool="cursor", display="Cursor")
+        total, _ = redact_sqlite({sample_secret}, [target], dry_run=False)
+
+        assert total == n_rows
+        con = sqlite3.connect(dest)
+        leaked = con.execute(
+            "SELECT COUNT(*) FROM msgs WHERE data LIKE ?", (f"%{sample_secret}%",)
+        ).fetchone()[0]
+        redacted = con.execute(
+            "SELECT COUNT(*) FROM msgs WHERE data LIKE ?", (f"%{REDACTED}%",)
+        ).fetchone()[0]
+        con.close()
+        assert leaked == 0
+        assert redacted == n_rows
+
 
 class TestShortTextRedaction:
     @pytest.mark.parametrize(

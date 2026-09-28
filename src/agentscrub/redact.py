@@ -1038,13 +1038,20 @@ def redact_sqlite(
                     if not text_cols:
                         continue
                     col_list = ", ".join(_sqlite_ident(c) for c in text_cols)
-                    cur = con.execute(
+                    # Keyset pagination: each batch is a fresh, fully consumed
+                    # query, so the UPDATEs below never run while a SELECT on
+                    # the same table is still open (undefined in SQLite: rows
+                    # can be skipped) and memory stays bounded by one batch.
+                    page_sql = (
                         f"SELECT rowid, {col_list} FROM {table_sql}"
+                        " WHERE rowid > ? ORDER BY rowid LIMIT 200"
                     )
+                    last_rowid = -(2 ** 63)
                     while True:
-                        rows = cur.fetchmany(500)
+                        rows = con.execute(page_sql, (last_rowid,)).fetchall()
                         if not rows:
                             break
+                        last_rowid = rows[-1][0]
                         for row in rows:
                             rowid = row[0]
                             for i, val in enumerate(row[1:]):
