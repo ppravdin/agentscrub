@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import urllib.parse
 from multiprocessing import util as _mp_util
 from pathlib import Path
 
@@ -157,11 +158,6 @@ def collect_managed_credential_files() -> list[Path]:
             continue
         if p.suffix in BINARY_EXTS:
             continue
-        try:
-            if p.stat().st_size > 10 * 1024 * 1024:
-                continue
-        except OSError:
-            continue
         files.append(p)
     return sorted(set(files))
 
@@ -176,12 +172,7 @@ def collect_files(targets: list[ScanTarget]) -> list[Path]:
                 continue
             if target.excluded_by_name(p) and not is_managed_credential_file(p):
                 continue
-            # Cheap checks first; never read a file we are going to skip.
-            try:
-                if p.stat().st_size > 10 * 1024 * 1024:
-                    continue
-            except OSError:
-                continue
+            # No size limit: large logs are scanned in chunks, not skipped.
             try:
                 # Only the head is needed to sniff binary/non-UTF-8 content.
                 with p.open("rb") as fh:
@@ -396,6 +387,34 @@ def _proof(secret: str, label: str) -> str:
     return f"{short} · {preview} · #{h}"
 
 
+_FINDINGS_BLOCK_CHARS = 8 * 1024 * 1024
+
+
+def _count_secrets_streaming(secrets: set[str], fp: Path) -> dict[str, int]:
+    """Occurrences of each secret in fp, reading it in bounded blocks.
+
+    The last (longest secret - 1) characters are carried into the next block
+    so secrets spanning a block boundary are counted once, not missed.
+    """
+    counts: dict[str, int] = {}
+    keep = max((len(s) for s in secrets), default=1) - 1
+    pending = ""
+    with fp.open("r", errors="ignore") as fh:
+        while True:
+            block = fh.read(_FINDINGS_BLOCK_CHARS)
+            if not block:
+                break
+            text = pending + block
+            for s in secrets:
+                n = text.count(s)
+                if pending:
+                    n -= pending.count(s)   # matches wholly inside the carry were counted already
+                if n > 0:
+                    counts[s] = counts.get(s, 0) + n
+            pending = text[-keep:] if keep > 0 else ""
+    return counts
+
+
 def file_findings(
     secrets: set[str],
     fp: Path,
@@ -404,12 +423,12 @@ def file_findings(
     """Safe per-file finding details for reports."""
     type_map = type_map or {}
     try:
-        text = fp.read_text(errors="ignore")
+        counts = _count_secrets_streaming(secrets, fp)
     except Exception:
         return []
 
     findings: list[dict[str, object]] = []
-    present = [s for s in secrets if s in text]
+    present = list(counts)
     for secret in sorted(present, key=lambda s: (type_map.get(s, "unknown"), hashlib.sha256(s.encode()).hexdigest())):
         label = _short_label(type_map.get(secret, "unknown"))
         findings.append({
@@ -417,7 +436,7 @@ def file_findings(
             "proof": _proof(secret, type_map.get(secret, "unknown")),
             "_secret": secret,
             "secret_hash": hashlib.sha256(secret.encode()).hexdigest(),
-            "hits": text.count(secret),
+            "hits": counts[secret],
         })
     return findings
 
@@ -918,6 +937,49 @@ def redact_short_text_prefix(
     return "".join(out), safe_end, count
 
 
+# Lines longer than this skip the JSON parse (which costs ~10x the line in
+# RAM) and are redacted as raw text in bounded blocks.
+_MAX_JSON_LINE_CHARS = 8 * 1024 * 1024
+
+
+def _redact_oversized_line(first: str, inp, out, secrets: frozenset[str]) -> int:
+    """Raw-redact one line too large to hold whole; returns replacements made.
+
+    `first` is the already-read start of the line; the rest is read from `inp`
+    in blocks. The last (longest secret - 1) characters of each block are
+    carried into the next one so a secret spanning a block boundary is still
+    replaced whole.
+    """
+    keep = max((len(s) for s in secrets), default=1) - 1
+    count = 0
+    pending = ""
+    piece = first
+    while True:
+        text = pending + piece
+        done = text.endswith("\n")
+        if not done:
+            nxt = inp.readline(_MAX_JSON_LINE_CHARS)
+            if nxt:
+                piece_next = nxt
+            else:
+                done = True   # EOF without a trailing newline
+        new, n = _redact_raw_line(text, secrets)
+        count += n
+        if done:
+            if out:
+                out.write(new)
+            return count
+        if keep > 0 and len(new) > keep:
+            if out:
+                out.write(new[:-keep])
+            pending = new[-keep:]
+        else:
+            pending = new if keep > 0 else ""
+            if keep <= 0 and out:
+                out.write(new)
+        piece = piece_next
+
+
 def redact_file(args: tuple) -> tuple[str, int, str | None]:
     """Worker — must be top-level for multiprocessing.Pool pickling.
 
@@ -937,7 +999,15 @@ def redact_file(args: tuple) -> tuple[str, int, str | None]:
             if not dry_run:
                 out = tmp.open("w", encoding="utf-8")
             with path.open("r", encoding="utf-8") as inp:
-                for line in inp:
+                while True:
+                    line = inp.readline(_MAX_JSON_LINE_CHARS)
+                    if not line:
+                        break
+                    if len(line) >= _MAX_JSON_LINE_CHARS and not line.endswith("\n"):
+                        # One enormous line (e.g. an inlined base64 payload):
+                        # stream it in blocks instead of holding it whole.
+                        total += _redact_oversized_line(line, inp, out, secrets)
+                        continue
                     stripped = line.rstrip("\n")
                     if not stripped.strip() or not any(s in stripped for s in secrets):
                         if out:
@@ -997,12 +1067,104 @@ def _sqlite_unique_columns(con: sqlite3.Connection, table: str) -> set[str]:
     return cols
 
 
+def _open_sqlite(db_path: Path, read_only: bool) -> sqlite3.Connection:
+    """Open a DB; read-only when possible so a scan never touches WAL/SHM."""
+    if read_only:
+        try:
+            uri = "file:" + urllib.parse.quote(str(db_path)) + "?mode=ro"
+            con = sqlite3.connect(uri, uri=True)
+            con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
+            return con
+        except sqlite3.Error:
+            pass   # e.g. WAL DB without a -shm: fall back to a normal open
+    return sqlite3.connect(str(db_path))
+
+
+def _redact_one_db(db_path: Path, secrets: set[str], dry_run: bool) -> int:
+    """Redact (or, if dry_run, count) secrets in one DB. Returns replacements made.
+
+    The connection is always closed, including when an error propagates; an
+    uncommitted live pass is rolled back, so a failed DB is left untouched.
+    """
+    con = _open_sqlite(db_path, read_only=dry_run)
+    try:
+        tables = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        db_count = 0
+        for (tname,) in tables:
+            if tname.startswith("_sqlx"):
+                continue
+            table_sql = _sqlite_ident(tname)
+            cols = con.execute(f"PRAGMA table_info({table_sql})").fetchall()
+            protected_cols = {
+                r[1] for r in cols if r[5]
+            } | _sqlite_unique_columns(con, tname)
+            text_cols = [
+                r[1] for r in cols
+                if ("text" in r[2].lower() or r[2] == "")
+                and r[1] not in protected_cols
+            ]
+            if not text_cols:
+                continue
+            col_list = ", ".join(_sqlite_ident(c) for c in text_cols)
+            # Keyset pagination: each batch is a fresh, fully consumed
+            # query, so the UPDATEs below never run while a SELECT on
+            # the same table is still open (undefined in SQLite: rows
+            # can be skipped) and memory stays bounded by one batch.
+            page_sql = (
+                f"SELECT rowid, {col_list} FROM {table_sql}"
+                " WHERE rowid > ? ORDER BY rowid LIMIT 200"
+            )
+            last_rowid = -(2 ** 63)
+            while True:
+                rows = con.execute(page_sql, (last_rowid,)).fetchall()
+                if not rows:
+                    break
+                last_rowid = rows[-1][0]
+                for row in rows:
+                    rowid = row[0]
+                    for i, val in enumerate(row[1:]):
+                        if not val or not isinstance(val, str):
+                            continue
+                        if not any(s in val for s in secrets):
+                            continue
+                        new_val, n = val, 0
+                        for s in secrets:
+                            if s in new_val:
+                                n += new_val.count(s)
+                                new_val = new_val.replace(s, REDACTED)
+                        if n:
+                            db_count += n
+                            if not dry_run:
+                                con.execute(
+                                    f"UPDATE {table_sql} SET {_sqlite_ident(text_cols[i])} = ?"
+                                    " WHERE rowid = ?",
+                                    (new_val, rowid),
+                                )
+        if not dry_run and db_count:
+            con.commit()
+        return db_count
+    finally:
+        con.close()
+
+
 def redact_sqlite(
     secrets: set[str],
     targets: list[ScanTarget],
     dry_run: bool,
+    only_paths: set[Path] | None = None,
+    use_cache: bool = True,
 ) -> tuple[int, list[tuple[Path, int, str | None]]]:
-    """Redact text columns in all SQLite DBs. Returns (total, [(path, count, error)])."""
+    """Redact text columns in all SQLite DBs. Returns (total, [(path, count, error)]).
+
+    With use_cache, a DB whose on-disk state is unchanged since it was verified
+    free of these secrets is skipped, and only secrets not yet verified against
+    it are searched for. only_paths restricts the pass to specific DBs (used to
+    redact just the DBs a preview found secrets in).
+    """
+    from . import cache as _cache
+
     results: list[tuple[Path, int, str | None]] = []
     for target in targets:
         seen_dbs: set[Path] = set()
@@ -1016,67 +1178,24 @@ def redact_sqlite(
         for db_path in sorted(db_paths):
             if target.excluded(db_path):
                 continue
+            if only_paths is not None and db_path not in only_paths:
+                continue
+            state_before = _cache.db_state(db_path) if use_cache else None
+            todo = _cache.db_unchecked_secrets(db_path, secrets) if use_cache else secrets
+            if not todo:
+                continue   # unchanged since verified clean for every current secret
             try:
-                con = sqlite3.connect(str(db_path))
-                tables = con.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-                db_count = 0
-                for (tname,) in tables:
-                    if tname.startswith("_sqlx"):
-                        continue
-                    table_sql = _sqlite_ident(tname)
-                    cols = con.execute(f"PRAGMA table_info({table_sql})").fetchall()
-                    protected_cols = {
-                        r[1] for r in cols if r[5]
-                    } | _sqlite_unique_columns(con, tname)
-                    text_cols = [
-                        r[1] for r in cols
-                        if ("text" in r[2].lower() or r[2] == "")
-                        and r[1] not in protected_cols
-                    ]
-                    if not text_cols:
-                        continue
-                    col_list = ", ".join(_sqlite_ident(c) for c in text_cols)
-                    # Keyset pagination: each batch is a fresh, fully consumed
-                    # query, so the UPDATEs below never run while a SELECT on
-                    # the same table is still open (undefined in SQLite: rows
-                    # can be skipped) and memory stays bounded by one batch.
-                    page_sql = (
-                        f"SELECT rowid, {col_list} FROM {table_sql}"
-                        " WHERE rowid > ? ORDER BY rowid LIMIT 200"
-                    )
-                    last_rowid = -(2 ** 63)
-                    while True:
-                        rows = con.execute(page_sql, (last_rowid,)).fetchall()
-                        if not rows:
-                            break
-                        last_rowid = rows[-1][0]
-                        for row in rows:
-                            rowid = row[0]
-                            for i, val in enumerate(row[1:]):
-                                if not val or not isinstance(val, str):
-                                    continue
-                                if not any(s in val for s in secrets):
-                                    continue
-                                new_val, n = val, 0
-                                for s in secrets:
-                                    if s in new_val:
-                                        n += new_val.count(s)
-                                        new_val = new_val.replace(s, REDACTED)
-                                if n:
-                                    db_count += n
-                                    if not dry_run:
-                                        con.execute(
-                                            f"UPDATE {table_sql} SET {_sqlite_ident(text_cols[i])} = ?"
-                                            " WHERE rowid = ?",
-                                            (new_val, rowid),
-                                        )
-                if not dry_run and db_count:
-                    con.commit()
-                con.close()
-                if db_count:
-                    results.append((db_path, db_count, None))
+                db_count = _redact_one_db(db_path, todo, dry_run)
             except Exception as e:
                 results.append((db_path, -1, str(e)))  # negative = error
+                continue
+            if db_count:
+                results.append((db_path, db_count, None))
+            if not use_cache:
+                continue
+            if db_count and not dry_run:
+                _cache.invalidate_db(db_path)   # rewritten: verify again next time
+            elif not db_count and _cache.db_state(db_path) == state_before:
+                # Nothing found and nothing changed underneath us while reading.
+                _cache.mark_db_checked(db_path, todo, state_before)
     return sum(c for _, c, _ in results if c > 0), results

@@ -312,6 +312,145 @@ class TestRedactSqlite:
         assert redacted == n_rows
 
 
+class TestLargeFiles:
+    def test_collect_files_has_no_size_limit(self, tmp_path: Path) -> None:
+        from agentscrub.redact import collect_files
+
+        big = tmp_path / "session.jsonl"
+        with big.open("w") as fh:
+            for _ in range(120_000):
+                fh.write("x" * 99 + "\n")   # ~12 MB, past the old 10 MB cap
+        assert big.stat().st_size > 10 * 1024 * 1024
+        target = ScanTarget(path=tmp_path, tool="claude", display="Claude Code")
+        assert big in collect_files([target])
+
+    @pytest.mark.parametrize("offset", [0, 1, 37, 90, 99, 100, 101, 150, 297, 298, 299, 300])
+    def test_oversized_line_redacted_across_block_boundaries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_secret: str, offset: int
+    ) -> None:
+        import agentscrub.redact as R
+
+        monkeypatch.setattr(R, "_MAX_JSON_LINE_CHARS", 100)
+        line = "a" * offset + sample_secret + "b" * (700 - offset)
+        fp = tmp_path / "huge.jsonl"
+        fp.write_text("first\n" + line + "\nlast\n")
+
+        _, n, err = R.redact_file((str(fp), frozenset({sample_secret}), False))
+        assert err is None and n == 1
+        text = fp.read_text()
+        assert sample_secret not in text
+        assert text == "first\n" + "a" * offset + R.REDACTED + "b" * (700 - offset) + "\nlast\n"
+
+    def test_oversized_line_without_trailing_newline(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_secret: str
+    ) -> None:
+        import agentscrub.redact as R
+
+        monkeypatch.setattr(R, "_MAX_JSON_LINE_CHARS", 100)
+        fp = tmp_path / "huge.txt"
+        fp.write_text("z" * 250 + sample_secret + "z" * 250)
+        _, n, err = R.redact_file((str(fp), frozenset({sample_secret}), False))
+        assert err is None and n == 1
+        assert fp.read_text() == "z" * 250 + R.REDACTED + "z" * 250
+
+    def test_file_findings_counts_across_block_boundaries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_secret: str
+    ) -> None:
+        import agentscrub.redact as R
+
+        monkeypatch.setattr(R, "_FINDINGS_BLOCK_CHARS", 64)
+        body = ("q" * 50 + sample_secret) * 7 + "tail"
+        fp = tmp_path / "f.log"
+        fp.write_text(body)
+        findings = R.file_findings({sample_secret}, fp, {})
+        assert len(findings) == 1 and findings[0]["hits"] == 7
+
+
+class TestSqliteCacheAndSafety:
+    def _make_db(self, tmp_path: Path, secret: str) -> Path:
+        db = tmp_path / "hist.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE m (id INTEGER PRIMARY KEY, body TEXT)")
+        con.executemany("INSERT INTO m(body) VALUES (?)", [("hello",), ("world",)])
+        con.commit()
+        con.close()
+        return db
+
+    def test_unchanged_clean_db_is_not_rescanned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_secret: str
+    ) -> None:
+        import agentscrub.redact as R
+
+        db = self._make_db(tmp_path, sample_secret)
+        target = ScanTarget(path=tmp_path, tool="cursor", display="Cursor")
+        calls: list[set[str]] = []
+        real = R._redact_one_db
+        monkeypatch.setattr(
+            R, "_redact_one_db", lambda p, s, d: (calls.append(set(s)), real(p, s, d))[1]
+        )
+
+        R.redact_sqlite({sample_secret}, [target], dry_run=True)
+        R.redact_sqlite({sample_secret}, [target], dry_run=True)
+        assert len(calls) == 1                       # second run skipped the DB
+
+        R.redact_sqlite({sample_secret, "another-new-secret-value"}, [target], dry_run=True)
+        assert calls[-1] == {"another-new-secret-value"}   # only the new one is searched
+
+        con = sqlite3.connect(db)
+        con.execute("INSERT INTO m(body) VALUES (?)", (f"leak {sample_secret}",))
+        con.commit()
+        con.close()
+        total, res = R.redact_sqlite({sample_secret}, [target], dry_run=True)
+        assert total == 1 and res[0][0] == db        # a changed DB is scanned again
+
+    def test_only_paths_limits_the_live_pass(
+        self, tmp_path: Path, sample_secret: str
+    ) -> None:
+        import agentscrub.redact as R
+
+        a, b = tmp_path / "a.db", tmp_path / "b.db"
+        for db in (a, b):
+            con = sqlite3.connect(db)
+            con.execute("CREATE TABLE m (id INTEGER PRIMARY KEY, body TEXT)")
+            con.execute("INSERT INTO m(body) VALUES (?)", (f"x {sample_secret}",))
+            con.commit()
+            con.close()
+        target = ScanTarget(path=tmp_path, tool="cursor", display="Cursor")
+        total, res = R.redact_sqlite({sample_secret}, [target], dry_run=False, only_paths={a})
+        assert [p for p, _, _ in res] == [a]
+        assert sample_secret in sqlite3.connect(b).execute("SELECT body FROM m").fetchone()[0]
+
+    def test_connection_closed_when_scan_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_secret: str
+    ) -> None:
+        import agentscrub.redact as R
+
+        db = tmp_path / "broken.db"
+        db.write_bytes(b"SQLite format 3\0" + b"\xff" * 4096)   # corrupt
+        opened: list["_Tracked"] = []
+        real_connect = sqlite3.connect
+
+        class _Tracked:
+            def __init__(self, con: sqlite3.Connection) -> None:
+                self.con, self.closed = con, False
+            def __getattr__(self, name: str):
+                return getattr(self.con, name)
+            def close(self) -> None:
+                self.closed = True
+                self.con.close()
+
+        def tracking_connect(*a, **k):
+            t = _Tracked(real_connect(*a, **k))
+            opened.append(t)
+            return t
+
+        monkeypatch.setattr(R.sqlite3, "connect", tracking_connect)
+        target = ScanTarget(path=tmp_path, tool="cursor", display="Cursor")
+        total, res = R.redact_sqlite({sample_secret}, [target], dry_run=False)
+        assert res and res[0][1] == -1                # reported as an error
+        assert opened and all(t.closed for t in opened)
+
+
 class TestShortTextRedaction:
     @pytest.mark.parametrize(
         "text",

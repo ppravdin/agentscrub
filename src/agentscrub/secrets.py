@@ -133,40 +133,132 @@ def _titus(d: Path) -> dict[str, str]:
     return s
 
 
-def _run_on_files(files: list[Path], fn) -> dict[str, str]:
-    """Run a directory-scanning detector on a specific file list via a temp dir.
+# Files larger than this are not handed to detectors whole: they are cut into
+# newline-aligned chunks so detector memory and staging disk stay bounded no
+# matter how large an agent log grows. There is no file size limit.
+CHUNK_BYTES = 8 * 1024 * 1024
+# Chunk bytes staged per detector invocation (hardlinked small files cost none).
+# Titus needs ~11x this in RAM, so it is what bounds detector memory.
+BATCH_BYTES = 64 * 1024 * 1024
+# Re-scan this many bytes before a resume offset, so a token that straddles the
+# old end of the file (a line still being written) is seen whole.
+RESUME_OVERLAP = 8192
+# When one line exceeds 2 * CHUNK_BYTES it is cut anyway; consecutive pieces
+# overlap by this much so a secret at the cut is still seen whole.
+_FORCED_SPLIT_OVERLAP = 8192
 
-    Hard-links files into a temp dir on the same filesystem so the detector
-    scans only the files that actually need scanning (uncached / changed).
-    Falls back to shutil.copy2 if hard links are unavailable (cross-device).
+
+def _iter_chunks(fp: Path, start: int = 0):
+    """Yield fp[start:] as newline-aligned byte chunks of about CHUNK_BYTES.
+
+    Holds at most ~2 chunks in memory. Lines are only cut when a single line
+    is longer than 2 * CHUNK_BYTES (then with _FORCED_SPLIT_OVERLAP overlap).
     """
-    if not files:
-        return {}
-    import shutil as _shutil
+    with fp.open("rb") as fh:
+        fh.seek(start)
+        carry = b""
+        while True:
+            block = fh.read(CHUNK_BYTES)
+            if not block:
+                break
+            buf = carry + block
+            cut = buf.rfind(b"\n")
+            if cut != -1:
+                yield buf[:cut + 1]
+                carry = buf[cut + 1:]
+            elif len(buf) >= 2 * CHUNK_BYTES:
+                yield buf
+                carry = buf[-_FORCED_SPLIT_OVERLAP:]
+            else:
+                carry = buf
+        if carry:
+            yield carry
 
+
+def _stage_dir():
     from .backup import BACKUP_ROOT
     try:
         tmp_parent = BACKUP_ROOT.parent
         tmp_parent.mkdir(parents=True, exist_ok=True)
-        td: tempfile.TemporaryDirectory = tempfile.TemporaryDirectory(
-            dir=str(tmp_parent), prefix="scan_"
-        )
+        return tempfile.TemporaryDirectory(dir=str(tmp_parent), prefix="scan_")
     except OSError:
-        td = tempfile.TemporaryDirectory(prefix="agentscrub_scan_")
-    with td as tmp:
-        tmp_path = Path(tmp)
-        linked = 0
-        for i, fp in enumerate(files):
-            dest = tmp_path / f"{i:08d}{fp.suffix}"
-            try:
-                os.link(fp, dest)
-            except OSError:
+        return tempfile.TemporaryDirectory(prefix="agentscrub_scan_")
+
+
+def _run_on_files(
+    files: list[Path],
+    fn,
+    offsets: dict[Path, int] | None = None,
+) -> dict[str, str]:
+    """Run a directory-scanning detector on a specific file list via temp dirs.
+
+    Small files are hard-linked (shutil.copy2 if cross-device) into one temp
+    dir. Files larger than CHUNK_BYTES, and files with a resume offset (only
+    their appended tail needs scanning), are cut into newline-aligned chunks
+    that are staged and scanned in batches of at most BATCH_BYTES, so neither
+    memory nor scratch disk grows with file size.
+    """
+    if not files:
+        return {}
+    import shutil as _shutil
+    offsets = offsets or {}
+
+    small: list[Path] = []
+    big: list[tuple[Path, int]] = []
+    for fp in files:
+        start = max(0, offsets.get(fp, 0) - RESUME_OVERLAP) if offsets.get(fp) else 0
+        try:
+            size = fp.stat().st_size
+        except OSError:
+            continue
+        if start == 0 and size <= CHUNK_BYTES:
+            small.append(fp)
+        else:
+            big.append((fp, start))
+
+    out: dict[str, str] = {}
+
+    if small:
+        with _stage_dir() as tmp:
+            tmp_path = Path(tmp)
+            linked = 0
+            for i, fp in enumerate(small):
+                dest = tmp_path / f"{i:08d}{fp.suffix}"
                 try:
-                    _shutil.copy2(str(fp), str(dest))
+                    os.link(fp, dest)
                 except OSError:
-                    continue
-            linked += 1
-        return fn(tmp_path) if linked else {}
+                    try:
+                        _shutil.copy2(str(fp), str(dest))
+                    except OSError:
+                        continue
+                linked += 1
+            if linked:
+                out.update(fn(tmp_path))
+
+    if big:
+        td = _stage_dir()
+        staged = 0
+        n_files = 0
+        try:
+            for i, (fp, start) in enumerate(big):
+                try:
+                    for k, chunk in enumerate(_iter_chunks(fp, start)):
+                        if staged and staged + len(chunk) > BATCH_BYTES:
+                            out.update(fn(Path(td.name)))
+                            td.cleanup()
+                            td = _stage_dir()
+                            staged = 0
+                            n_files = 0
+                        (Path(td.name) / f"{i:08d}_{k:05d}{fp.suffix}").write_bytes(chunk)
+                        staged += len(chunk)
+                        n_files += 1
+                except OSError:
+                    continue   # vanished or unreadable mid-scan
+            if n_files:
+                out.update(fn(Path(td.name)))
+        finally:
+            td.cleanup()
+    return out
 
 
 def collect(targets: list[ScanTarget]) -> tuple[set[str], dict[str, int]]:

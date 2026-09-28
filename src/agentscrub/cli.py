@@ -944,9 +944,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
             except ValueError: pass
 
     # ── incremental cache: skip files unchanged since last clean scan ─────────
-    from .cache import filter_uncached, mark_clean
+    from .cache import mark_clean, plan_scan
     from .cache import invalidate as _cache_invalidate
-    _needs_scan, _n_cached = filter_uncached(_phase1_scanned_files)
+    _plan = plan_scan(_phase1_scanned_files)
+    _needs_scan, _n_cached = _plan.needs_scan, _plan.n_skipped
+    _n_resumed = len(_plan.offsets)   # grown logs: only the appended tail is scanned
     if not _needs_scan:
         n_total = len(_phase1_scanned_files)
         p(f"\n[bold green]All {n_total:,} files clean (cached) — nothing to scan.[/bold green]\n")
@@ -965,7 +967,9 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     }
 
     # ── phase 1: detect credentials ───────────────────────────────────────────
-    _p1_cache = (f"  [dim]{_n_cached:,} cached · {len(_needs_scan):,} to scan[/dim]"
+    _p1_cache = (f"  [dim]{_n_cached:,} cached · {len(_needs_scan):,} to scan"
+                 + (f" ({_n_resumed:,} appended-only)" if _n_resumed else "")
+                 + "[/dim]"
                  if _n_cached else "")
     p(f"\n[bold cyan]Phase 1[/bold cyan]  [bold]Checking agent directories[/bold]{_p1_cache}")
     t1 = time.perf_counter()
@@ -1024,7 +1028,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
                 if target not in _cached_targets:
                     uncached_here = [fp for fp in _needs_scan
                                      if _path_under(fp, target.path)]
-                    result = _run_on_files(uncached_here, fn)
+                    result = _run_on_files(uncached_here, fn, offsets=_plan.offsets)
                     out.update(result)
                 with _t_lock:
                     _t_done_n[target.path] += 1
@@ -1057,16 +1061,17 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
         }
         with _cf.ThreadPoolExecutor() as _ex:
             _futs2 = [
-                ("gitleaks",   _ex.submit(_rof, _all_uncached, _gitleaks)),
-                ("trufflehog", _ex.submit(_rof, _all_uncached, _trufflehog)),
-                ("titus",      _ex.submit(_rof, _all_uncached, _titus)),
+                ("gitleaks",   _ex.submit(_rof, _all_uncached, _gitleaks, _plan.offsets)),
+                ("trufflehog", _ex.submit(_rof, _all_uncached, _trufflehog, _plan.offsets)),
+                ("titus",      _ex.submit(_rof, _all_uncached, _titus, _plan.offsets)),
             ]
             for _tool, _fut in _futs2:
                 _by_tool_plain[_tool].update(_fut.result())
         all_secrets = {s for d in _by_tool_plain.values()
                        for s in d if len(s) >= 8 and not s.isspace()}
         counts = {t: len(d) for t, d in _by_tool_plain.items()}
-        _all_typed: dict[str, str] = {}
+        from .secrets import all_typed as _all_typed_fn
+        _all_typed: dict[str, str] = _all_typed_fn(_by_tool_plain)
         if _n_cached:
             print(f"  {_n_cached:,} cached · {len(_needs_scan):,} to scan", flush=True)
         for tool, n in counts.items():
@@ -1075,7 +1080,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
         print(f"  {time.perf_counter()-t1:.1f}s", flush=True)
 
     if not all_secrets:
-        mark_clean(_needs_scan)
+        mark_clean(_needs_scan, _plan)
         p("\n[bold green]Clean — no credential patterns found.[/bold green]\n")
         return
 
@@ -1155,7 +1160,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     # Mark newly confirmed clean files in the cache (grep found no secrets).
     _flagged_set = set(flagged_all)
     _clean_now = [fp for fp in _needs_scan if fp not in _flagged_set]
-    mark_clean(_clean_now)
+    mark_clean(_clean_now, _plan)
 
     # ── Phase 2 timing only — the actionable per-tool table needs the
     # precision partition and runs after the report is built. ────────────────
@@ -1245,6 +1250,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
                 flagged_redactable.append(fp)
             else:
                 flagged_lowconf_only.append(fp)
+
+        # Low-confidence-only files are never modified by `run`, so their
+        # result cannot change until the file does. Recording them as
+        # processed stops every later run from re-scanning them with all
+        # three detectors (they were the bulk of the "still to scan" set).
+        mark_clean(flagged_lowconf_only, _plan)
 
         full_report_path = _write_scan_report(
             targets=targets,
@@ -1659,7 +1670,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     # Phase 4 cleans embedded session/log databases (e.g. ~/.codex/logs_2.sqlite,
     # Cursor's state.vscdb). Users don't think 'SQLite' — they think 'history'.
     p("\n[bold cyan]Phase 4[/bold cyan]  [bold]Cleaning database history[/bold]")
-    sqlite_total, sqlite_results = redact_sqlite(redactable_secrets, targets, dry_run=False)
+    # Only the databases the preview found secrets in (or failed on) need a live pass.
+    sqlite_total, sqlite_results = redact_sqlite(
+        redactable_secrets, targets, dry_run=False,
+        only_paths={db for db, cnt, _e in sqlite_preview_results if cnt != 0},
+    )
     if not sqlite_results:
         p("  [dim]no databases found[/dim]")
     sqlite_errors = 0
