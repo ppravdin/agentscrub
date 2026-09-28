@@ -319,7 +319,7 @@ class TestLargeFiles:
         big = tmp_path / "session.jsonl"
         with big.open("w") as fh:
             for _ in range(120_000):
-                fh.write("x" * 99 + "\n")   # ~12 MB, past the old 10 MB cap
+                fh.write("x" * 99 + "\n")  # ~12 MB, past the old 10 MB cap
         assert big.stat().st_size > 10 * 1024 * 1024
         target = ScanTarget(path=tmp_path, tool="claude", display="Claude Code")
         assert big in collect_files([target])
@@ -391,21 +391,19 @@ class TestSqliteCacheAndSafety:
 
         R.redact_sqlite({sample_secret}, [target], dry_run=True)
         R.redact_sqlite({sample_secret}, [target], dry_run=True)
-        assert len(calls) == 1                       # second run skipped the DB
+        assert len(calls) == 1  # second run skipped the DB
 
         R.redact_sqlite({sample_secret, "another-new-secret-value"}, [target], dry_run=True)
-        assert calls[-1] == {"another-new-secret-value"}   # only the new one is searched
+        assert calls[-1] == {"another-new-secret-value"}  # only the new one is searched
 
         con = sqlite3.connect(db)
         con.execute("INSERT INTO m(body) VALUES (?)", (f"leak {sample_secret}",))
         con.commit()
         con.close()
         total, res = R.redact_sqlite({sample_secret}, [target], dry_run=True)
-        assert total == 1 and res[0][0] == db        # a changed DB is scanned again
+        assert total == 1 and res[0][0] == db  # a changed DB is scanned again
 
-    def test_only_paths_limits_the_live_pass(
-        self, tmp_path: Path, sample_secret: str
-    ) -> None:
+    def test_only_paths_limits_the_live_pass(self, tmp_path: Path, sample_secret: str) -> None:
         import agentscrub.redact as R
 
         a, b = tmp_path / "a.db", tmp_path / "b.db"
@@ -426,15 +424,17 @@ class TestSqliteCacheAndSafety:
         import agentscrub.redact as R
 
         db = tmp_path / "broken.db"
-        db.write_bytes(b"SQLite format 3\0" + b"\xff" * 4096)   # corrupt
-        opened: list["_Tracked"] = []
+        db.write_bytes(b"SQLite format 3\0" + b"\xff" * 4096)  # corrupt
+        opened: list[_Tracked] = []
         real_connect = sqlite3.connect
 
         class _Tracked:
             def __init__(self, con: sqlite3.Connection) -> None:
                 self.con, self.closed = con, False
+
             def __getattr__(self, name: str):
                 return getattr(self.con, name)
+
             def close(self) -> None:
                 self.closed = True
                 self.con.close()
@@ -447,7 +447,7 @@ class TestSqliteCacheAndSafety:
         monkeypatch.setattr(R.sqlite3, "connect", tracking_connect)
         target = ScanTarget(path=tmp_path, tool="cursor", display="Cursor")
         total, res = R.redact_sqlite({sample_secret}, [target], dry_run=False)
-        assert res and res[0][1] == -1                # reported as an error
+        assert res and res[0][1] == -1  # reported as an error
         assert opened and all(t.closed for t in opened)
 
 
@@ -488,7 +488,9 @@ class TestShortTextRedaction:
         assert value not in res
         assert res == REDACTED
 
-    @pytest.mark.parametrize("suffix", ["-extraSECRET", "/extraSECRET", "=extraSECRET", ".extraSECRET"])
+    @pytest.mark.parametrize(
+        "suffix", ["-extraSECRET", "/extraSECRET", "=extraSECRET", ".extraSECRET"]
+    )
     def test_vendor_prefix_with_suffix_falls_back_to_whole_value(self, suffix: str) -> None:
         value = "ghp_abcdefghijklmnopqrstuvwxyz1234567890" + suffix
         res, count = redact_short_text(f"api_token={value}")
@@ -505,7 +507,16 @@ class TestShortTextRedaction:
 
     @pytest.mark.parametrize(
         "key",
-        ["accessToken", "clientSecret", "apiKey", "dbPassword", "tokenValue", "secretValue", "APIKey", "JWTSecret"],
+        [
+            "accessToken",
+            "clientSecret",
+            "apiKey",
+            "dbPassword",
+            "tokenValue",
+            "secretValue",
+            "APIKey",
+            "JWTSecret",
+        ],
     )
     def test_redacts_camel_case_credential_keys(self, key: str) -> None:
         value = "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
@@ -513,7 +524,9 @@ class TestShortTextRedaction:
         assert count == 1
         assert value not in res
 
-    @pytest.mark.parametrize("key", ["accessTokenExpires", "refreshTokenExpiresAt", "tokenType", "secretName", "monKey"])
+    @pytest.mark.parametrize(
+        "key", ["accessTokenExpires", "refreshTokenExpiresAt", "tokenType", "secretName", "monKey"]
+    )
     def test_ignores_metadata_and_ambiguous_camel_keys(self, key: str) -> None:
         value = "2026-08-12T12:34:56Z"
         res, count = redact_short_text(f'{{"{key}": "{value}"}}')
@@ -538,6 +551,7 @@ class TestShortTextRedaction:
 
     def test_redacts_redis_url(self) -> None:
         from agentscrub.redact import redact_short_text
+
         text = "REDIS_URL: redis://:b27f91a87b9dce7f0f3dc9fe42a50d38f223e4c26f435310247bf1114b1384eb@dokku-redis-aiche-redis:6379"
         res, count = redact_short_text(text)
         assert count == 1
@@ -546,6 +560,7 @@ class TestShortTextRedaction:
 
     def test_redacts_shell_secret_variable(self) -> None:
         from agentscrub.redact import redact_short_text
+
         text = 'REDIS_PW="b27f91a87b9dce7f0f3dc9fe42a50d38f223e4c26f435310247bf1114b1384eb"'
         res, count = redact_short_text(text)
         assert count == 1
@@ -554,6 +569,7 @@ class TestShortTextRedaction:
 
     def test_redacts_redis_cli_auth(self) -> None:
         from agentscrub.redact import redact_short_text
+
         text = 'redis-cli -a "mysecretpassword123"'
         res, count = redact_short_text(text)
         assert count == 1
@@ -562,6 +578,7 @@ class TestShortTextRedaction:
 
     def test_redacts_colon_separated_token(self) -> None:
         from agentscrub.redact import redact_short_text
+
         text = "+AICHE_DEBUG_TOKEN: PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
         res, count = redact_short_text(text)
         assert count == 1
@@ -570,6 +587,7 @@ class TestShortTextRedaction:
 
     def test_redacts_quoted_json_key(self) -> None:
         from agentscrub.redact import redact_short_text
+
         text = '"AICHE_DEBUG_TOKEN": "PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"'
         res, count = redact_short_text(text)
         assert count == 1
@@ -578,6 +596,7 @@ class TestShortTextRedaction:
 
     def test_redacts_long_line_lowercase_key(self) -> None:
         from agentscrub.redact import redact_short_text
+
         padding = "padding_" * 16
         text = f"{padding}api_key=PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf_CE5d7Po"
         assert len(text) > 128
@@ -588,6 +607,7 @@ class TestShortTextRedaction:
 
     def test_redacts_lowercase_password_colon(self) -> None:
         from agentscrub.redact import redact_short_text
+
         text = "password: hunter2secretvalue_abcdefghij"
         res, count = redact_short_text(text)
         assert count == 1
@@ -596,6 +616,7 @@ class TestShortTextRedaction:
 
     def test_redacts_bearer_tokens(self) -> None:
         from agentscrub.redact import redact_short_text
+
         t1 = "Authorization: Bearer PjRLVUtHmD5Na2FGpBTC1NmAMkozbyKVVhf"
         res1, count1 = redact_short_text(t1)
         assert count1 == 1
@@ -610,6 +631,7 @@ class TestShortTextRedaction:
 
     def test_prevents_colon_false_positives(self) -> None:
         from agentscrub.redact import redact_short_text
+
         prose_samples = [
             "API_KEY: not set",
             "PUBLIC_KEY: ssh-rsa AAAA...",

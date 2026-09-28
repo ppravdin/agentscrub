@@ -9,13 +9,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _isolated_cache_db(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+def _isolated_cache_db(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """No test may read or write the real ~/.agentscrub/state.db."""
     import agentscrub.cache as cache
 
-    monkeypatch.setattr(
-        cache, "_CACHE_DB", tmp_path_factory.mktemp("cachedb") / "state.db"
-    )
+    monkeypatch.setattr(cache, "_CACHE_DB", tmp_path_factory.mktemp("cachedb") / "state.db")
 
 
 @pytest.fixture

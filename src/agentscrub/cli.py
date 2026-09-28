@@ -986,8 +986,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
             except ValueError: pass
 
     # ── incremental cache: skip files unchanged since last clean scan ─────────
-    from .cache import mark_clean, plan_scan
     from .cache import invalidate as _cache_invalidate
+    from .cache import mark_clean, plan_scan
     _plan = plan_scan(_phase1_scanned_files)
     _needs_scan, _n_cached = _plan.needs_scan, _plan.n_skipped
     _n_resumed = len(_plan.offsets)   # grown logs: only the appended tail is scanned

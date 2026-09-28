@@ -66,7 +66,7 @@ class TestDiscover:
         ag_dir = fake_home / ".antigravity"
         ag_dir.mkdir(parents=True)
         (ag_dir / "session.json").write_text("{}")
-        
+
         ag_app_dir = fake_home / ".config" / "Antigravity" / "User" / "workspaceStorage"
         ag_app_dir.mkdir(parents=True)
         (ag_app_dir / "workspace1").mkdir()

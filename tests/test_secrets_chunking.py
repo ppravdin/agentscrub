@@ -11,6 +11,7 @@ from agentscrub import secrets as S
 
 def _finder(needles: set[str], seen_dirs: list[Path] | None = None):
     """Fake detector: reports every needle found in any staged file."""
+
     def fn(d: Path) -> dict[str, str]:
         if seen_dirs is not None:
             seen_dirs.append(d)
@@ -21,6 +22,7 @@ def _finder(needles: set[str], seen_dirs: list[Path] | None = None):
                 if n in data:
                     out[n] = "fake"
         return out
+
     return fn
 
 
@@ -66,7 +68,7 @@ class TestRunOnFiles:
 
     def test_batches_are_bounded_and_staging_is_cleaned_up(self, tmp_path: Path) -> None:
         fp = tmp_path / "huge.jsonl"
-        fp.write_text(("y" * 100 + "\n") * 2000)   # ~200 KB, batch limit is 1 KB
+        fp.write_text(("y" * 100 + "\n") * 2000)  # ~200 KB, batch limit is 1 KB
         dirs: list[Path] = []
         staged_bytes: list[int] = []
 
@@ -82,8 +84,10 @@ class TestRunOnFiles:
 
     def test_small_files_still_hardlinked_in_one_pass(self, tmp_path: Path) -> None:
         secret = "ghp_SMALLFILE1234567890abcd"
-        a = tmp_path / "a.txt"; a.write_text("nothing\n")
-        b = tmp_path / "b.txt"; b.write_text(f"x {secret}\n")
+        a = tmp_path / "a.txt"
+        a.write_text("nothing\n")
+        b = tmp_path / "b.txt"
+        b.write_text(f"x {secret}\n")
         dirs: list[Path] = []
         assert S._run_on_files([a, b], _finder({secret}, dirs)) == {secret: "fake"}
         assert len(dirs) == 1
@@ -92,7 +96,7 @@ class TestRunOnFiles:
         old = "ghp_ALREADYSCANNED123456789"
         new = "ghp_APPENDEDAFTERWARDS12345"
         fp = tmp_path / "grow.jsonl"
-        head = f"old {old}\n" + ("filler line\n" * 3000)   # prefix >> RESUME_OVERLAP
+        head = f"old {old}\n" + ("filler line\n" * 3000)  # prefix >> RESUME_OVERLAP
         fp.write_text(head)
         offset = fp.stat().st_size
         with fp.open("a") as fh:
@@ -100,12 +104,12 @@ class TestRunOnFiles:
 
         found = S._run_on_files([fp], _finder({old, new}), offsets={fp: offset})
         assert new in found
-        assert old not in found   # the scanned prefix is not read again
+        assert old not in found  # the scanned prefix is not read again
 
     def test_token_straddling_the_old_end_is_still_seen(self, tmp_path: Path) -> None:
         secret = "ghp_STRADDLESOLDEND1234567"
         fp = tmp_path / "grow.jsonl"
-        fp.write_text("filler\n" * 300 + "tok " + secret[:10])   # writer mid-line
+        fp.write_text("filler\n" * 300 + "tok " + secret[:10])  # writer mid-line
         offset = fp.stat().st_size
         with fp.open("a") as fh:
             fh.write(secret[10:] + "\n")

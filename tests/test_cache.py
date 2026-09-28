@@ -99,7 +99,7 @@ class TestPlanScan:
         fp = tmp_path / "chmod.jsonl"
         fp.write_text("{}\n")
         cache.mark_clean([fp])
-        os.chmod(fp, 0o600)   # bumps ctime, not content
+        os.chmod(fp, 0o600)  # bumps ctime, not content
         plan = cache.plan_scan([fp])
         assert plan.n_skipped == 1
 
@@ -125,7 +125,7 @@ class TestPlanScan:
         fp = tmp_path / "rewritten.jsonl"
         fp.write_text("a" * 5000 + "\n")
         cache.mark_clean([fp])
-        fp.write_text("b" * 5000 + "\nmore\n")   # bigger, but the old bytes changed
+        fp.write_text("b" * 5000 + "\nmore\n")  # bigger, but the old bytes changed
         plan = cache.plan_scan([fp])
         assert plan.needs_scan == [fp]
         assert plan.offsets == {}
@@ -138,13 +138,13 @@ class TestPlanScan:
         fp.write_text("x" * 5000 + "\n")
         scanned_size = fp.stat().st_size
 
-        plan = cache.plan_scan([fp])          # scan starts here
-        with fp.open("a") as fh:               # ...the agent keeps writing
+        plan = cache.plan_scan([fp])  # scan starts here
+        with fp.open("a") as fh:  # ...the agent keeps writing
             fh.write("secret appended mid-scan\n")
-        cache.mark_clean([fp], plan)           # scan finishes
+        cache.mark_clean([fp], plan)  # scan finishes
 
         plan2 = cache.plan_scan([fp])
-        assert plan2.needs_scan == [fp]        # NOT treated as clean
+        assert plan2.needs_scan == [fp]  # NOT treated as clean
         assert plan2.offsets == {fp: scanned_size}
 
     def test_many_files_do_not_exceed_sql_variable_limit(

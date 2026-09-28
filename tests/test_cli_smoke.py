@@ -6,7 +6,6 @@ import importlib.util
 import os
 import subprocess
 import sys
-
 from pathlib import Path
 
 import pytest
@@ -231,7 +230,7 @@ def test_watch_text_emits_a_line_without_waiting_for_more_input(fake_home) -> No
     try:
         proc.stdin.write(f"key={_TOKEN}\n".encode())
         proc.stdin.flush()
-        line = _read_line_within(proc, 10)   # stdin is still open
+        line = _read_line_within(proc, 10)  # stdin is still open
         assert line is not None, "no output while the stream was open"
         assert _TOKEN.encode() not in line and b"[REDACTED]" in line
     finally:
@@ -244,7 +243,7 @@ def test_watch_text_survives_invalid_utf8_and_keeps_the_bytes(fake_home) -> None
     proc = _watch(fake_home)
     out, err = proc.communicate(data, timeout=30)
     assert proc.returncode == 0, err
-    assert b"before \xff\xfe\x80 junk\n" in out      # untouched, not replaced
+    assert b"before \xff\xfe\x80 junk\n" in out  # untouched, not replaced
     assert _TOKEN.encode() not in out and b"[REDACTED]" in out
     assert out.endswith(b"after\n")
 
@@ -252,7 +251,7 @@ def test_watch_text_survives_invalid_utf8_and_keeps_the_bytes(fake_home) -> None
 def test_watch_text_multibyte_character_split_across_reads(fake_home) -> None:
     proc = _watch(fake_home)
     try:
-        proc.stdin.write(b"caf\xc3")          # first byte of "\u00e9"
+        proc.stdin.write(b"caf\xc3")  # first byte of "\u00e9"
         proc.stdin.flush()
         import time
 

@@ -53,6 +53,7 @@ def test_detect_installer_ignores_unrelated_pipx_path(_mock_which) -> None:
 @patch("agentscrub.updater.fetch_latest_pypi_version")
 def test_run_update_already_up_to_date(mock_fetch) -> None:
     from agentscrub import __version__
+
     mock_fetch.return_value = __version__
     res = run_update(check_only=False, yes=True)
     assert res == 0
@@ -97,7 +98,9 @@ def test_run_update_retries_only_for_pep668(mock_run, _mock_fetch, _mock_detect)
 @patch("agentscrub.updater.detect_installer", return_value=[sys.executable, "-m", "pip", "install"])
 @patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
 @patch("subprocess.run")
-def test_run_update_does_not_retry_unrelated_pip_failure(mock_run, _mock_fetch, _mock_detect) -> None:
+def test_run_update_does_not_retry_unrelated_pip_failure(
+    mock_run, _mock_fetch, _mock_detect
+) -> None:
     mock_run.return_value = SimpleNamespace(
         returncode=1,
         stdout="",

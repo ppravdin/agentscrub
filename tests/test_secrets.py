@@ -22,13 +22,13 @@ class TestMergeHelpers:
         assert merged["secret-b"] == "aws"
 
     def test_trusted_label_survives_a_later_tool_with_an_unmapped_label(self) -> None:
-        from agentscrub.redact import is_high_precision_label, _short_label
+        from agentscrub.redact import _short_label, is_high_precision_label
 
         tok = "ghp_" + "a" * 36
         by_tool = {
             "gitleaks": {tok: "github-pat"},
             "trufflehog": {tok: "Github"},
-            "titus": {tok: "GitHub Personal Access Token"},   # runs last, unmapped
+            "titus": {tok: "GitHub Personal Access Token"},  # runs last, unmapped
         }
         merged = all_typed(by_tool)
         assert is_high_precision_label(_short_label(merged[tok]))
