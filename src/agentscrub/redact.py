@@ -919,43 +919,67 @@ def redact_short_text_prefix(
 
 
 def redact_file(args: tuple) -> tuple[str, int, str | None]:
-    """Worker — must be top-level for multiprocessing.Pool pickling."""
+    """Worker — must be top-level for multiprocessing.Pool pickling.
+
+    Streams line-by-line so memory stays proportional to a single line,
+    not the whole file.  Session JSONL files can be hundreds of MB;
+    reading them entirely into RAM was the main cause of 10-15 GB RSS.
+    """
     path_str, secrets, dry_run = args
     path = Path(path_str)
+    suffix = path.suffix or ".tmp"
+    tmp = path.with_suffix(suffix + ".agentscrub_tmp")
     try:
         original_mode = stat.S_IMODE(path.stat().st_mode)
-        lines_out, total = [], 0
-        for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
-            stripped = line.rstrip("\n")
-            if not stripped.strip() or not any(s in stripped for s in secrets):
-                lines_out.append(line)
-                continue
-            try:
-                obj = json.loads(stripped)
-                obj, n = _redact_obj(obj, secrets)
-                # Detectors scan raw JSONL. A token can be present in the
-                # encoded line as JSON escapes (for example trailing "\\n")
-                # but not match the decoded Python string byte-for-byte.
-                # Always verify the encoded output and raw-replace leftovers.
-                new = json.dumps(obj, ensure_ascii=False) if n else stripped
-                new, raw_n = _redact_raw_line(new, secrets)
-                total += n + raw_n
-                lines_out.append(new + ("\n" if line.endswith("\n") else ""))
-            except json.JSONDecodeError:
-                new, n = _redact_raw_line(stripped, secrets)
-                total += n
-                lines_out.append(new + ("\n" if line.endswith("\n") else ""))
+        total = 0
+        out = None
+        try:
+            if not dry_run:
+                out = tmp.open("w", encoding="utf-8")
+            with path.open("r", encoding="utf-8") as inp:
+                for line in inp:
+                    stripped = line.rstrip("\n")
+                    if not stripped.strip() or not any(s in stripped for s in secrets):
+                        if out:
+                            out.write(line)
+                        continue
+                    try:
+                        obj = json.loads(stripped)
+                        obj, n = _redact_obj(obj, secrets)
+                        new = json.dumps(obj, ensure_ascii=False) if n else stripped
+                        new, raw_n = _redact_raw_line(new, secrets)
+                        total += n + raw_n
+                    except json.JSONDecodeError:
+                        new, n = _redact_raw_line(stripped, secrets)
+                        total += n
+                    if out:
+                        out.write(new + ("\n" if line.endswith("\n") else ""))
+        finally:
+            if out:
+                out.close()
         if total == 0:
+            tmp.unlink(missing_ok=True)
             return path_str, 0, None
         if not dry_run:
-            suffix = path.suffix or ".tmp"
-            tmp = path.with_suffix(suffix + ".agentscrub_tmp")
-            tmp.write_text("".join(lines_out), encoding="utf-8")
             os.chmod(tmp, original_mode)
             shutil.move(str(tmp), str(path))
         return path_str, total, None
     except Exception as e:
+        tmp.unlink(missing_ok=True)
         return path_str, 0, str(e)
+
+
+_REDACT_WORKER_SECRETS: frozenset[str] | None = None
+
+
+def _init_redact_worker(secrets: set[str]) -> None:
+    global _REDACT_WORKER_SECRETS
+    _REDACT_WORKER_SECRETS = frozenset(secrets)
+
+
+def redact_file_worker(path_str: str) -> tuple[str, int, str | None]:
+    """Pool worker — secrets shared via initializer, always live (not dry_run)."""
+    return redact_file((path_str, _REDACT_WORKER_SECRETS, False))
 
 
 def _sqlite_ident(name: str) -> str:

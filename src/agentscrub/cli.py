@@ -850,13 +850,14 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     from .backup import backup
     from .discover import discover
     from .redact import (
+        _init_redact_worker,
         collect_files,
         collect_managed_credential_files,
         grep_filter,
         is_high_precision_label,
         is_managed_credential_file,
         partition_secrets_by_precision,
-        redact_file,
+        redact_file_worker,
         redact_sqlite,
         top_exposed,
     )
@@ -1587,7 +1588,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
       f"in {len(flagged_redactable):,} files[/bold]  "
       f"[dim]({WORKERS} workers)[/dim]")
     t3 = time.perf_counter()
-    worker_args = [(str(fp), actionable_redactable_secrets, False) for fp in flagged_redactable]
+    redact_paths = [str(fp) for fp in flagged_redactable]
     total_redactions = 0
     total_redacted_files = 0
     errors: list[str] = []
@@ -1607,8 +1608,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
             console=_CON,
         ) as prog:
             task = prog.add_task("redacting", total=len(flagged_redactable))
-            with Pool(WORKERS) as pool:
-                for path_str, count, err in pool.imap_unordered(redact_file, worker_args):
+            with Pool(WORKERS, initializer=_init_redact_worker,
+                       initargs=(actionable_redactable_secrets,)) as pool:
+                for path_str, count, err in pool.imap_unordered(
+                    redact_file_worker, redact_paths
+                ):
                     prog.advance(task)
                     if err:
                         errors.append(path_str)
@@ -1621,8 +1625,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
                             f"  [bold green] OK [/bold green]  "
                             f"{_label(path_str)}  [dim]→[/dim]  {count:,}")
     else:
-        with Pool(WORKERS) as pool:
-            for path_str, count, err in pool.imap_unordered(redact_file, worker_args):
+        with Pool(WORKERS, initializer=_init_redact_worker,
+                   initargs=(actionable_redactable_secrets,)) as pool:
+            for path_str, count, err in pool.imap_unordered(
+                redact_file_worker, redact_paths
+            ):
                 if err:
                     errors.append(path_str)
                     print(f"  WARN  {_label(path_str)}: {err}", flush=True)
