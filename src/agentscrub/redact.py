@@ -172,21 +172,24 @@ def collect_files(targets: list[ScanTarget]) -> list[Path]:
         for p in target.path.rglob("*"):
             if not p.is_file() or p.suffix in BINARY_EXTS:
                 continue
-            try:
-                sample = p.read_bytes()[:4096]
-                if b"\x00" in sample:
-                    continue
-                sample.decode("utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
             if target.excluded_by_dir(p):
                 continue
             if target.excluded_by_name(p) and not is_managed_credential_file(p):
                 continue
+            # Cheap checks first; never read a file we are going to skip.
             try:
                 if p.stat().st_size > 10 * 1024 * 1024:
                     continue
             except OSError:
+                continue
+            try:
+                # Only the head is needed to sniff binary/non-UTF-8 content.
+                with p.open("rb") as fh:
+                    sample = fh.read(4096)
+                if b"\x00" in sample:
+                    continue
+                sample.decode("utf-8")
+            except (OSError, UnicodeDecodeError):
                 continue
             files.append(p)
     return sorted(set(files))
