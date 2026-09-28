@@ -628,9 +628,53 @@ def cmd_schedule(action: str) -> int:
     return 0
 
 
+def _lossless_stdio() -> None:
+    """Pass undecodable bytes through unchanged instead of aborting.
+
+    A single stray byte (binary junk, a truncated multibyte char, a log in
+    another encoding) used to kill the whole redaction run.
+    """
+    for stream in (sys.stdin, sys.stdout):
+        try:
+            stream.reconfigure(errors="surrogateescape")
+        except (AttributeError, ValueError):
+            pass   # not a real text stream (e.g. replaced in tests)
+
+
+def _stdin_chunks(chunk_size: int):
+    """Yield stdin text as soon as any of it is available.
+
+    TextIOWrapper.read(n) blocks until n characters have arrived, so a quiet
+    `tail -f` produced no output until 4096 characters piled up. read1 returns
+    whatever is there; an incremental decoder keeps a multibyte character that
+    straddles two reads intact.
+    """
+    import codecs
+
+    raw = getattr(sys.stdin, "buffer", None)
+    if raw is None or not hasattr(raw, "read1"):
+        while True:
+            piece = sys.stdin.read(chunk_size)
+            if not piece:
+                return
+            yield piece
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogateescape")
+    while True:
+        data = raw.read1(chunk_size)
+        if not data:
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                yield tail
+            return
+        text = decoder.decode(data)
+        if text:
+            yield text
+
+
 def cmd_redact_text(ns: argparse.Namespace) -> None:
     from .redact import redact_short_text
 
+    _lossless_stdio()
     text = sys.stdin.read()
     redacted, count = redact_short_text(text, high_entropy=getattr(ns, "entropy", False))
     sys.stdout.write(redacted)
@@ -682,6 +726,7 @@ def cmd_pii_detect(ns: argparse.Namespace) -> int:
 def cmd_watch_text(ns: argparse.Namespace) -> int:
     from .redact import redact_short_text, redact_short_text_prefix
 
+    _lossless_stdio()
     chunk_size = max(1, int(getattr(ns, "chunk_size", 4096)))
     max_buffer = max(1, min(int(getattr(ns, "max_buffer", 8192)), 8192))
     overlap = min(256, max_buffer)
@@ -713,10 +758,7 @@ def cmd_watch_text(ns: argparse.Namespace) -> int:
             print(f"agentscrub: redacted {count} secret(s)", file=sys.stderr, flush=True)
         return True, consumed
 
-    while True:
-        chunk = sys.stdin.read(chunk_size)
-        if chunk == "":
-            break
+    for chunk in _stdin_chunks(chunk_size):
         pending += chunk
         while pending:
             newline_at = pending.find("\n")

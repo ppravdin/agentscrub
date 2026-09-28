@@ -197,3 +197,80 @@ def test_watch_text_redacts_secret_crossing_forced_boundary(fake_home) -> None:
     assert r.returncode == 0
     assert token not in r.stdout
     assert r.stdout == ("x" * 60) + "[REDACTED]" + ("!" * 40)
+
+
+_TOKEN = "ghp_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+
+
+def _watch(fake_home, *extra: str) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-m", "agentscrub.cli", "watch-text", *extra],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_make_env(fake_home),
+    )
+
+
+def _read_line_within(proc: subprocess.Popen, seconds: float) -> bytes | None:
+    """First stdout line, or None if nothing arrives in time (stream stays open)."""
+    import queue
+    import threading
+
+    q: queue.Queue[bytes] = queue.Queue()
+    threading.Thread(target=lambda: q.put(proc.stdout.readline()), daemon=True).start()
+    try:
+        return q.get(timeout=seconds)
+    except queue.Empty:
+        return None
+
+
+def test_watch_text_emits_a_line_without_waiting_for_more_input(fake_home) -> None:
+    """A quiet `tail -f` must not sit on a line until 4096 characters pile up."""
+    proc = _watch(fake_home)
+    try:
+        proc.stdin.write(f"key={_TOKEN}\n".encode())
+        proc.stdin.flush()
+        line = _read_line_within(proc, 10)   # stdin is still open
+        assert line is not None, "no output while the stream was open"
+        assert _TOKEN.encode() not in line and b"[REDACTED]" in line
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+
+
+def test_watch_text_survives_invalid_utf8_and_keeps_the_bytes(fake_home) -> None:
+    data = b"before \xff\xfe\x80 junk\nkey=" + _TOKEN.encode() + b"\nafter\n"
+    proc = _watch(fake_home)
+    out, err = proc.communicate(data, timeout=30)
+    assert proc.returncode == 0, err
+    assert b"before \xff\xfe\x80 junk\n" in out      # untouched, not replaced
+    assert _TOKEN.encode() not in out and b"[REDACTED]" in out
+    assert out.endswith(b"after\n")
+
+
+def test_watch_text_multibyte_character_split_across_reads(fake_home) -> None:
+    proc = _watch(fake_home)
+    try:
+        proc.stdin.write(b"caf\xc3")          # first byte of "\u00e9"
+        proc.stdin.flush()
+        import time
+
+        time.sleep(0.3)
+        proc.stdin.write(b"\xa9 ok\n")
+        proc.stdin.flush()
+        assert _read_line_within(proc, 10) == "caf\u00e9 ok\n".encode()
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+
+
+def test_redact_text_survives_invalid_utf8(fake_home) -> None:
+    r = subprocess.run(
+        [sys.executable, "-m", "agentscrub.cli", "redact-text"],
+        input=b"junk \xff\xfe key=" + _TOKEN.encode() + b"\n",
+        capture_output=True,
+        env=_make_env(fake_home),
+    )
+    assert r.returncode == 0, r.stderr
+    assert b"junk \xff\xfe" in r.stdout and _TOKEN.encode() not in r.stdout
