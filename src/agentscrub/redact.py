@@ -1155,6 +1155,7 @@ def redact_sqlite(
     dry_run: bool,
     only_paths: set[Path] | None = None,
     use_cache: bool = True,
+    stats: dict[str, int] | None = None,
 ) -> tuple[int, list[tuple[Path, int, str | None]]]:
     """Redact text columns in all SQLite DBs. Returns (total, [(path, count, error)]).
 
@@ -1162,8 +1163,16 @@ def redact_sqlite(
     free of these secrets is skipped, and only secrets not yet verified against
     it are searched for. only_paths restricts the pass to specific DBs (used to
     redact just the DBs a preview found secrets in).
+
+    If `stats` is given it is filled with how many databases were examined:
+    "checked" (read now), "unchanged" (skipped: verified clean and untouched
+    since) and "errors". Without it a caller cannot tell "no databases" from
+    "databases examined, nothing found".
     """
     from . import cache as _cache
+
+    if stats is not None:
+        stats.update(checked=0, unchanged=0, errors=0)
 
     results: list[tuple[Path, int, str | None]] = []
     for target in targets:
@@ -1183,12 +1192,18 @@ def redact_sqlite(
             state_before = _cache.db_state(db_path) if use_cache else None
             todo = _cache.db_unchecked_secrets(db_path, secrets) if use_cache else secrets
             if not todo:
+                if stats is not None:
+                    stats["unchanged"] += 1
                 continue   # unchanged since verified clean for every current secret
             try:
                 db_count = _redact_one_db(db_path, todo, dry_run)
             except Exception as e:
                 results.append((db_path, -1, str(e)))  # negative = error
+                if stats is not None:
+                    stats["errors"] += 1
                 continue
+            if stats is not None:
+                stats["checked"] += 1
             if db_count:
                 results.append((db_path, db_count, None))
             if not use_cache:
