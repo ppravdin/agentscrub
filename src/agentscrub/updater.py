@@ -35,8 +35,14 @@ def fetch_latest_pypi_version(timeout: float = 5.0) -> str:
         return str(data["info"]["version"])
 
 
-def detect_installer() -> list[str]:
-    """Detect if agentscrub should be updated via pipx or sys.executable pip."""
+def detect_installer(version: str | None = None) -> list[str]:
+    """Detect if agentscrub should be updated via pipx or sys.executable pip.
+
+    With `version`, pip is told exactly which release to install. An unpinned
+    `pip install --upgrade` reads the package index, which lags the JSON API
+    the version came from by several minutes, and answered "already satisfied"
+    for a release that was already live.
+    """
     prefix_parts = tuple(part.lower() for part in Path(sys.prefix).resolve().parts)
     pipx_layout = any(
         prefix_parts[index : index + 3] == ("pipx", "venvs", "agentscrub")
@@ -48,8 +54,33 @@ def detect_installer() -> list[str]:
             return [pipx_path, "upgrade", "agentscrub"]
 
     # Default to sys.executable -m pip install --upgrade agentscrub
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "agentscrub"]
-    return cmd
+    if version:
+        return [
+            sys.executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir",
+            f"agentscrub=={version}",
+        ]
+    return [sys.executable, "-m", "pip", "install", "--upgrade", "agentscrub"]
+
+
+def _installed_version(python: str | None = None) -> str | None:
+    """The version a fresh interpreter imports now, or None if it cannot be read.
+
+    Runs in a new process on purpose: this process has already imported the old
+    code, so only a fresh one reflects what the installer just wrote.
+    """
+    try:
+        r = subprocess.run(
+            [python or sys.executable, "-c", "import agentscrub; print(agentscrub.__version__)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+    out = getattr(r, "stdout", None)
+    if getattr(r, "returncode", 1) != 0 or not isinstance(out, str) or not out.strip():
+        return None
+    return out.strip().splitlines()[-1].strip() or None
 
 
 def _display_process_output(result: subprocess.CompletedProcess[str]) -> None:
@@ -94,7 +125,7 @@ def run_update(*, check_only: bool = False, yes: bool = False) -> int:
             p("\n[yellow]Update cancelled.[/yellow]")
             return 130
 
-    cmd = detect_installer()
+    cmd = detect_installer(version=remote_version)
     p(f"Running update command: [dim]{' '.join(cmd)}[/dim]")
 
     res = subprocess.run(cmd, capture_output=True, text=True)
@@ -119,9 +150,33 @@ def run_update(*, check_only: bool = False, yes: bool = False) -> int:
         res = subprocess.run(fallback_cmd, capture_output=True, text=True)
         _display_process_output(res)
 
-    if res.returncode == 0:
-        p(f"\n[bold green]Successfully updated agentscrub to v{remote_version}![/bold green]")
-        return 0
-    else:
+    if res.returncode != 0:
         p(f"\n[red]Update command failed with exit code {res.returncode}.[/red]")
+        if "no matching distribution" in output or "could not find a version" in output:
+            p(
+                "[dim]PyPI's package index can take a few minutes to list a brand-new "
+                "release. Try again shortly.[/dim]"
+            )
         return res.returncode
+
+    # pip exiting 0 is not proof: it also exits 0 when it decides nothing needs
+    # doing. Only claim success for what a fresh interpreter actually imports.
+    installed = _installed_version()
+    if installed is None:
+        p(
+            "\n[yellow]The installer finished, but I could not confirm the installed "
+            f"version. Run [bold]agentscrub --version[/bold] to check it is v{remote_version}.[/yellow]"
+        )
+        return 0
+    if parse_version_tuple(installed) != parse_version_tuple(remote_version):
+        p(
+            f"\n[red]Update did not take effect: agentscrub is still v{installed}, "
+            f"expected v{remote_version}.[/red]"
+        )
+        p(
+            "[dim]PyPI's package index can lag a few minutes behind a new release. "
+            f"Try again shortly, or run: {' '.join(detect_installer(version=remote_version))}[/dim]"
+        )
+        return 1
+    p(f"\n[bold green]Successfully updated agentscrub to v{remote_version}![/bold green]")
+    return 0

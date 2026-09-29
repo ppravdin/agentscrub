@@ -79,8 +79,11 @@ def test_run_update_executes_installer(mock_fetch, mock_subproc) -> None:
 
 @patch("agentscrub.updater.detect_installer", return_value=[sys.executable, "-m", "pip", "install"])
 @patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("agentscrub.updater._installed_version", return_value="99.99.99")
 @patch("subprocess.run")
-def test_run_update_retries_only_for_pep668(mock_run, _mock_fetch, _mock_detect) -> None:
+def test_run_update_retries_only_for_pep668(
+    mock_run, _mock_installed, _mock_fetch, _mock_detect
+) -> None:
     mock_run.side_effect = [
         SimpleNamespace(
             returncode=1,
@@ -125,3 +128,63 @@ def test_run_update_replays_installer_output(mock_run, _mock_fetch, _mock_detect
     captured = capsys.readouterr()
     assert "download details" in captured.out
     assert "pip failed" in captured.err
+
+
+def test_detect_installer_pins_the_version_and_bypasses_pip_cache() -> None:
+    cmd = detect_installer(version="1.2.3")
+    if cmd[1:3] == ["-m", "pip"]:
+        assert "agentscrub==1.2.3" in cmd and "--no-cache-dir" in cmd
+
+
+@patch("agentscrub.updater._installed_version", return_value="1.0.0")
+@patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("subprocess.run")
+def test_run_update_does_not_claim_success_when_the_old_version_is_still_installed(
+    mock_run, _mock_fetch, _mock_installed, capsys
+) -> None:
+    """pip exits 0 with 'Requirement already satisfied' when its index lags."""
+    mock_run.return_value = SimpleNamespace(
+        returncode=0, stdout="Requirement already satisfied", stderr=""
+    )
+    assert run_update(yes=True) == 1
+    out = capsys.readouterr().out
+    assert "Successfully updated" not in out
+    assert "still v1.0.0" in out and "v99.99.99" in out
+
+
+@patch("agentscrub.updater._installed_version", return_value="99.99.99")
+@patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("subprocess.run")
+def test_run_update_reports_success_only_when_verified(
+    mock_run, _mock_fetch, _mock_installed, capsys
+) -> None:
+    mock_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+    assert run_update(yes=True) == 0
+    assert "Successfully updated agentscrub to v99.99.99" in capsys.readouterr().out
+    assert "agentscrub==99.99.99" in " ".join(mock_run.call_args.args[0])  # exact release pinned
+
+
+@patch("agentscrub.updater._installed_version", return_value=None)
+@patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("subprocess.run")
+def test_run_update_is_honest_when_the_result_cannot_be_verified(
+    mock_run, _mock_fetch, _mock_installed, capsys
+) -> None:
+    mock_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+    assert run_update(yes=True) == 0
+    out = capsys.readouterr().out
+    assert "Successfully updated" not in out and "could not confirm" in out
+
+
+@patch("agentscrub.updater.fetch_latest_pypi_version", return_value="99.99.99")
+@patch("subprocess.run")
+def test_run_update_explains_index_lag_when_pip_cannot_find_the_release(
+    mock_run, _mock_fetch, capsys
+) -> None:
+    mock_run.return_value = SimpleNamespace(
+        returncode=1,
+        stdout="",
+        stderr="ERROR: No matching distribution found for agentscrub==99.99.99",
+    )
+    assert run_update(yes=True) == 1
+    assert "few minutes" in capsys.readouterr().out
