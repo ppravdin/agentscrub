@@ -133,8 +133,9 @@ def _redaction_summary(
                  normally far larger than the number of secrets: it measures
                  how much text gets rewritten, not how many secrets leaked.
     """
-    from .redact import is_high_precision_label
+    from .redact import is_high_precision_label, is_redactable_finding
 
+    lookalikes: set[str] = set()
     per_target: dict[object, dict[str, object]] = {
         t: {"files": 0, "secrets": set(), "occurrences": 0} for t in targets
     }
@@ -149,7 +150,9 @@ def _redaction_summary(
         files += 1
         per_target[owner]["files"] += 1
         for f in findings_by_file.get(fp, []):
-            if not is_high_precision_label(str(f["type"])):
+            if not is_redactable_finding(f):
+                if is_high_precision_label(str(f["type"])):
+                    lookalikes.add(str(f.get("secret_hash") or f.get("proof") or ""))
                 continue
             h = str(f.get("secret_hash") or f.get("proof") or "")
             n = int(f.get("hits", 0) or 0)
@@ -168,6 +171,7 @@ def _redaction_summary(
         "secret_values": values,
         "files": files,
         "occurrences": occurrences,
+        "lookalikes": len(lookalikes - {""}),
     }
 
 
@@ -177,12 +181,12 @@ def _secrets_removed(
 ) -> int:
     """Distinct secrets that are gone: every one found in a file that was
     rewritten and re-checked clean. (Not the number planned.)"""
-    from .redact import is_high_precision_label
+    from .redact import is_redactable_finding
 
     gone: set[str] = set()
     for fp in done_files:
         for f in findings_by_file.get(fp, []):
-            if is_high_precision_label(str(f["type"])):
+            if is_redactable_finding(f):
                 h = str(f.get("secret_hash") or f.get("proof") or "")
                 if h:
                     gone.add(h)
@@ -216,9 +220,19 @@ def _write_scan_report(
     files_unchanged: int = 0,
     mode: str = "scan",
 ) -> Path:
-    from .redact import is_high_precision_label, is_low_signal_label
+    from .redact import (
+        is_high_precision_label,
+        is_low_signal_label,
+        is_redactable_finding,
+    )
 
     to_redact = redactable_files or set()
+    redactable_labels = {
+        str(f["type"])
+        for fp in flagged
+        for f in findings_by_file.get(fp, [])
+        if is_redactable_finding(f)
+    }
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     created = datetime.now()
@@ -304,9 +318,14 @@ def _write_scan_report(
                 preview, hash_part = after_type.rsplit(" · ", 1)
             else:
                 preview, hash_part = "—", after_type
+            note = (
+                "  [looks like an ID, path or hostname: reported only]"
+                if is_high_precision_label(ftype) and not is_redactable_finding(finding)
+                else ""
+            )
             fh.write(
                 f"{indent}- {ftype:<20}  {hits:>6}×   "
-                f"{preview:<24}   {hash_part}\n"
+                f"{preview:<24}   {hash_part}{note}\n"
             )
         if limit and len(ordered) > limit:
             fh.write(f"{indent}... {len(ordered) - limit:,} more findings in audit\n")
@@ -446,11 +465,12 @@ def _write_scan_report(
             fh.write("\nTop credential-like pattern types (all matches)\n")
             fh.write("===============================================\n")
             fh.write("Only types marked 'redact' are ever rewritten; the rest are reported only.\n")
+            fh.write("Even under a 'redact' type, values that look like IDs, paths or hostnames are reported only.\n")
             fh.write("Types group detector patterns; use previews and hashes to recognize the actual repeated secret.\n\n")
             fh.write(f"{'Type':<32} {'Files':>8} {'Occurrences':>12}  Action\n")
             fh.write(f"{'-' * 32} {'-' * 8:>8} {'-' * 12:>12}  ------\n")
             for label, files_n, hits_n in pattern_counts[:20]:
-                act = "redact" if is_high_precision_label(label) else "report only"
+                act = "redact" if label in redactable_labels else "report only"
                 fh.write(f"{label:<32} {files_n:>8,} {hits_n:>12,}  {act}\n")
             if len(pattern_counts) > 20:
                 fh.write(f"... {len(pattern_counts) - 20:,} more pattern types in audit\n")
@@ -1011,8 +1031,8 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
         collect_files,
         collect_managed_credential_files,
         grep_filter,
-        is_high_precision_label,
         is_managed_credential_file,
+        is_redactable_finding,
         partition_secrets_by_precision,
         redact_file_worker,
         redact_sqlite,
@@ -1403,7 +1423,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
         flagged_lowconf_only: list[Path] = []
         for fp in flagged:
             f_list = findings_by_file.get(fp, [])
-            if any(is_high_precision_label(f["type"]) for f in f_list):
+            if any(is_redactable_finding(f) for f in f_list):
                 flagged_redactable.append(fp)
             else:
                 flagged_lowconf_only.append(fp)
@@ -1480,6 +1500,11 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
                     "  [dim]* Secrets are counted per tool; the same secret can appear "
                     "in several tools, so the column can add up to more than the total.[/dim]"
                 )
+            if summary["lookalikes"]:
+                _CON.print(
+                    f"  [dim]{_pl(summary['lookalikes'], 'more value')} matched a secret pattern but "
+                    "look like IDs, hostnames or paths (e.g. session UUIDs): reported, never modified.[/dim]"
+                )
             _CON.print(
                 "  [dim]Occurrences = every place a secret appears. A secret pasted once is "
                 "re-sent with each later turn of a session, so this is far larger than the "
@@ -1515,6 +1540,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
                     "several tools, so the column can add up to more than the total.",
                     flush=True,
                 )
+            if summary["lookalikes"]:
+                print(
+                    f"  {_pl(summary['lookalikes'], 'more value')} matched a secret pattern but look like "
+                    "IDs, hostnames or paths: reported, never modified.",
+                    flush=True,
+                )
             if type_counts_redactable:
                 _bars(type_counts_redactable, total=n_secrets, count_label="Secrets")
                 print(
@@ -1544,7 +1575,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     # Build a findings_by_file restricted to high-precision rows, then rank
     # only the files we'll redact.
     findings_redactable_only: dict[Path, list[dict[str, object]]] = {
-        fp: [f for f in findings if is_high_precision_label(f["type"])]
+        fp: [f for f in findings if is_redactable_finding(f)]
         for fp, findings in findings_by_file.items()
     }
     if RICH:

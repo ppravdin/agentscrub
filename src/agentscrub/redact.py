@@ -317,6 +317,51 @@ def is_high_precision_label(label: str) -> bool:
     return _norm_label(label) in _HIGH_PRECISION_NORMALIZED
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# lowercase words joined by hyphens, e.g. a host or slug like "web-3f9a2c1"
+_HOSTLIKE_RE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+){1,4}$")
+# a/b/c.py, /home/x/y.json, ~/x/y.ts — needs a file extension so that base64
+# secrets containing "/" are not mistaken for paths
+_PATHLIKE_RE = re.compile(r"^(?:~/|/)?(?:[\w.@+-]+/)+[\w.@+-]*\.\w{1,6}$")
+# Vendor keys that are legitimately lowercase-hyphenated; never treated as hostnames.
+_VENDOR_HYPHEN_PREFIXES = (
+    "sk-", "pk-", "rk-", "pplx-", "xai-", "fc-", "tly-", "nvapi-", "key-", "gsk-",
+)
+
+
+def looks_like_identifier(value: str) -> str | None:
+    """Why `value` is an ID, path or hostname rather than a credential, else None.
+
+    Detector rules that key off context ("host", "id", "npm", "key") also fire
+    on session UUIDs, git hashes, file paths and hostnames. Agent logs are full
+    of them, and rewriting them corrupts the log (a Claude Code transcript links
+    messages by UUID) far more than it protects. They are still reported.
+    Deliberately narrow: anything with real key structure stays redactable.
+    """
+    v = value.strip()
+    if _UUID_RE.match(v):
+        return "UUID"
+    if _GIT_SHA_RE.match(v):
+        return "git commit hash"
+    if _PATHLIKE_RE.match(v):
+        return "file path"
+    if len(v) <= 24 and _HOSTLIKE_RE.match(v) and not v.startswith(_VENDOR_HYPHEN_PREFIXES):
+        return "hostname or slug"
+    return None
+
+
+def is_redactable_finding(finding: dict[str, object]) -> bool:
+    """True if `run` may rewrite this finding: a high-precision label AND a
+    value that does not look like an identifier."""
+    if not is_high_precision_label(str(finding["type"])):
+        return False
+    secret = finding.get("_secret")
+    return not (isinstance(secret, str) and looks_like_identifier(secret))
+
+
 def partition_secrets_by_precision(
     secrets: set[str],
     type_map: dict[str, str],
@@ -325,13 +370,14 @@ def partition_secrets_by_precision(
 
     Returns:
       redactable  — high-precision tokens, safe to rewrite to [REDACTED]
-      report_only — everything else; reported in the audit but never written
+      report_only — everything else, including values that look like IDs,
+                    paths or hostnames; reported in the audit, never written
     """
     redactable: set[str] = set()
     report_only: set[str] = set()
     for s in secrets:
         label = _short_label(type_map.get(s, "unknown"))
-        if is_high_precision_label(label):
+        if is_high_precision_label(label) and not looks_like_identifier(s):
             redactable.add(s)
         else:
             report_only.add(s)
