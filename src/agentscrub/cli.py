@@ -1842,6 +1842,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     # ── phase 3: redact text ──────────────────────────────────────────────────
     # Only rewrite files containing high-precision tokens; loose-rule matches
     # ride along in the audit report but stay untouched.
+    t_backup_done = time.perf_counter()
     p(f"\n[bold cyan]Phase 3[/bold cyan]  [bold]Redacting {_pl(len(actionable_redactable_secrets), 'secret')} "
       f"in {_pl(len(flagged_redactable), 'file')}[/bold]  "
       f"[dim]({WORKERS} workers)[/dim]")
@@ -1916,6 +1917,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     # ── phase 4: database history (SQLite/vscdb files) ───────────────────────
     # Phase 4 cleans embedded session/log databases (e.g. ~/.codex/logs_2.sqlite,
     # Cursor's state.vscdb). Users don't think 'SQLite' — they think 'history'.
+    t_files_done = time.perf_counter()
     p("\n[bold cyan]Phase 4[/bold cyan]  [bold]Cleaning database history[/bold]")
     # Only the databases the preview found secrets in (or failed on) need a live pass.
     sqlite_total, sqlite_results = redact_sqlite(
@@ -1958,7 +1960,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
                 p(f"  [yellow]NOTE[/yellow]  {prefix}{label}: {err}")
 
     # ── summary ───────────────────────────────────────────────────────────────
-    elapsed = time.perf_counter() - t_total
+    _t_end = time.perf_counter()
+    elapsed = _t_end - t_total
+    # Say what each part cost: "redaction took 66s" once blamed the backup's
+    # database check for the time of a 0.1s rewrite.
+    timing = (f"backup {t_backup_done - t_total:.0f}s · files {t_files_done - t_backup_done:.0f}s"
+              f" · databases {_t_end - t_files_done:.0f}s")
     # Real numbers: secrets count only when their files were rewritten and
     # re-checked clean; replacements are what was actually made, not the plan.
     _bad = {str(x) for x in errors} | {str(x) for x in still_exposed}
@@ -1983,7 +1990,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
         g.add_column()
         _mark = "[bold yellow]! Done[/bold yellow]" if (errors or still_exposed or sqlite_errors or sqlite_notes) \
             else "[bold green]✓ Done[/bold green]"
-        g.add_row(_mark, f"[dim]redaction took {elapsed:.0f}s[/dim]")
+        g.add_row(_mark, f"[dim]{timing}[/dim]")
         g.add_row("", "")
         g.add_row(f"[bold green]{n_removed:,}[/bold green]",
                   f"{'secret' if n_removed == 1 else 'secrets'} removed from [bold]{_pl(total_redacted_files, 'file')}[/bold]  "
@@ -2014,7 +2021,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
                    else "[bold green]Scrub complete[/bold green]"),
         ))
     else:
-        print(f"\n✓ Done (redaction took {elapsed:.0f}s)", flush=True)
+        print(f"\n✓ Done ({timing})", flush=True)
         print(f"  {_pl(n_removed, 'secret')} removed from {_pl(total_redacted_files, 'file')} ({total_redactions:,} replacements)"
               + (f", of {n_planned:,} found" if n_removed < n_planned else ""), flush=True)
         if sqlite_total:
