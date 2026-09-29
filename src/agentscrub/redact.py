@@ -1134,85 +1134,133 @@ def _open_sqlite(db_path: Path, read_only: bool) -> sqlite3.Connection:
 _DEDUPE_MIN_LEN = 1024
 
 
-def _redact_one_db(db_path: Path, secrets: set[str], dry_run: bool) -> int:
-    """Redact (or, if dry_run, count) secrets in one DB. Returns replacements made.
+# Internal tables of SQLite full-text indexes. They hold index structure, not
+# text: rewriting them corrupts the index. The virtual table itself is
+# redacted (an UPDATE re-indexes the row), these are never touched.
+_FTS_SHADOW_SUFFIXES = (
+    "_data", "_idx", "_content", "_docsize", "_config", "_segments", "_segdir", "_stat",
+)
 
-    The connection is always closed, including when an error propagates; an
-    uncommitted live pass is rolled back, so a failed DB is left untouched.
+
+def _redact_table(
+    con: sqlite3.Connection,
+    tname: str,
+    create_sql: str | None,
+    secrets: set[str],
+    dry_run: bool,
+    clean_seen: set[bytes],
+) -> int:
+    """Redact (or count) secrets in one table's text columns. Returns replacements."""
+    table_sql = _sqlite_ident(tname)
+    cols = con.execute(f"PRAGMA table_info({table_sql})").fetchall()
+    protected_cols = {r[1] for r in cols if r[5]} | _sqlite_unique_columns(con, tname)
+    text_cols = [
+        r[1] for r in cols
+        if ("text" in r[2].lower() or r[2] == "") and r[1] not in protected_cols
+    ]
+    if not text_cols:
+        return 0
+    col_list = ", ".join(_sqlite_ident(c) for c in text_cols)
+
+    # Rows are addressed by rowid, or by the primary key for WITHOUT ROWID
+    # tables (which have no rowid at all).
+    if "WITHOUT ROWID" in (create_sql or "").upper():
+        key_cols = [r[1] for r in sorted((r for r in cols if r[5]), key=lambda r: r[5])]
+        if not key_cols:
+            return 0
+        key_sql = ", ".join(_sqlite_ident(c) for c in key_cols)
+        marks = ", ".join("?" * len(key_cols))
+        first_sql = f"SELECT {key_sql}, {col_list} FROM {table_sql} ORDER BY {key_sql} LIMIT 200"
+        next_sql = (
+            f"SELECT {key_sql}, {col_list} FROM {table_sql}"
+            f" WHERE ({key_sql}) > ({marks}) ORDER BY {key_sql} LIMIT 200"
+        )
+        where_sql = " AND ".join(f"{_sqlite_ident(c)} = ?" for c in key_cols)
+        nkey = len(key_cols)
+    else:
+        first_sql = f"SELECT rowid, {col_list} FROM {table_sql} ORDER BY rowid LIMIT 200"
+        next_sql = (
+            f"SELECT rowid, {col_list} FROM {table_sql}"
+            " WHERE rowid > ? ORDER BY rowid LIMIT 200"
+        )
+        where_sql = "rowid = ?"
+        nkey = 1
+
+    count = 0
+    last: tuple | None = None
+    # Keyset pagination: each batch is a fresh, fully consumed query, so the
+    # UPDATEs below never run while a SELECT on the same table is still open
+    # (undefined in SQLite: rows can be skipped) and memory stays bounded.
+    while True:
+        rows = con.execute(first_sql if last is None else next_sql, last or ()).fetchall()
+        if not rows:
+            break
+        last = tuple(rows[-1][:nkey])
+        for row in rows:
+            key = tuple(row[:nkey])
+            for i, val in enumerate(row[nkey:]):
+                if not val or not isinstance(val, str):
+                    continue
+                digest = None
+                if len(val) >= _DEDUPE_MIN_LEN:
+                    # 128-bit digest: an exact "same value" test, so a clean
+                    # duplicate can never hide a different value.
+                    digest = hashlib.blake2b(
+                        val.encode("utf-8", "surrogatepass"), digest_size=16
+                    ).digest()
+                    if digest in clean_seen:
+                        continue
+                if not any(sec in val for sec in secrets):
+                    if digest is not None:
+                        clean_seen.add(digest)
+                    continue
+                new_val, n = val, 0
+                for sec in secrets:
+                    if sec in new_val:
+                        n += new_val.count(sec)
+                        new_val = new_val.replace(sec, REDACTED)
+                if n:
+                    count += n
+                    if not dry_run:
+                        con.execute(
+                            f"UPDATE {table_sql} SET {_sqlite_ident(text_cols[i])} = ?"
+                            f" WHERE {where_sql}",
+                            (new_val, *key),
+                        )
+    return count
+
+
+def _redact_one_db(db_path: Path, secrets: set[str], dry_run: bool) -> tuple[int, list[str]]:
+    """Redact (or, if dry_run, count) secrets in one DB.
+
+    Returns (replacements, notes). A table that cannot be processed is reported
+    in `notes` and skipped; it no longer aborts the whole database, and the
+    other tables are still cleaned. The connection is always closed; a failure
+    that escapes leaves the database untouched (nothing is committed).
     """
     con = _open_sqlite(db_path, read_only=dry_run)
     try:
         if not secrets:
-            return 0
+            return 0, []
         clean_seen: set[bytes] = set()   # digests of long values already checked clean
-        tables = con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        tables = con.execute("SELECT name, sql FROM sqlite_master WHERE type='table'").fetchall()
+        fts_virtual = {
+            n for n, sql in tables
+            if sql and sql.upper().startswith("CREATE VIRTUAL TABLE") and " USING FTS" in sql.upper()
+        }
+        shadow = {f"{v}{suf}" for v in fts_virtual for suf in _FTS_SHADOW_SUFFIXES}
         db_count = 0
-        for (tname,) in tables:
-            if tname.startswith("_sqlx"):
+        notes: list[str] = []
+        for tname, create_sql in tables:
+            if tname.startswith("_sqlx") or tname in shadow:
                 continue
-            table_sql = _sqlite_ident(tname)
-            cols = con.execute(f"PRAGMA table_info({table_sql})").fetchall()
-            protected_cols = {
-                r[1] for r in cols if r[5]
-            } | _sqlite_unique_columns(con, tname)
-            text_cols = [
-                r[1] for r in cols
-                if ("text" in r[2].lower() or r[2] == "")
-                and r[1] not in protected_cols
-            ]
-            if not text_cols:
-                continue
-            col_list = ", ".join(_sqlite_ident(c) for c in text_cols)
-            # Keyset pagination: each batch is a fresh, fully consumed
-            # query, so the UPDATEs below never run while a SELECT on
-            # the same table is still open (undefined in SQLite: rows
-            # can be skipped) and memory stays bounded by one batch.
-            page_sql = (
-                f"SELECT rowid, {col_list} FROM {table_sql}"
-                " WHERE rowid > ? ORDER BY rowid LIMIT 200"
-            )
-            last_rowid = -(2 ** 63)
-            while True:
-                rows = con.execute(page_sql, (last_rowid,)).fetchall()
-                if not rows:
-                    break
-                last_rowid = rows[-1][0]
-                for row in rows:
-                    rowid = row[0]
-                    for i, val in enumerate(row[1:]):
-                        if not val or not isinstance(val, str):
-                            continue
-                        digest = None
-                        if len(val) >= _DEDUPE_MIN_LEN:
-                            # 128-bit digest: an exact "same value" test, so a
-                            # clean duplicate can never hide a different value.
-                            digest = hashlib.blake2b(
-                                val.encode("utf-8", "surrogatepass"), digest_size=16
-                            ).digest()
-                            if digest in clean_seen:
-                                continue
-                        if not any(s in val for s in secrets):
-                            if digest is not None:
-                                clean_seen.add(digest)
-                            continue
-                        new_val, n = val, 0
-                        for s in secrets:
-                            if s in new_val:
-                                n += new_val.count(s)
-                                new_val = new_val.replace(s, REDACTED)
-                        if n:
-                            db_count += n
-                            if not dry_run:
-                                con.execute(
-                                    f"UPDATE {table_sql} SET {_sqlite_ident(text_cols[i])} = ?"
-                                    " WHERE rowid = ?",
-                                    (new_val, rowid),
-                                )
+            try:
+                db_count += _redact_table(con, tname, create_sql, secrets, dry_run, clean_seen)
+            except Exception as e:
+                notes.append(f"table {tname} skipped: {e}")
         if not dry_run and db_count:
             con.commit()
-        return db_count
+        return db_count, notes
     finally:
         con.close()
 
@@ -1270,7 +1318,7 @@ def redact_sqlite(
             if progress is not None:
                 progress(db_path, n, len(candidates))
             try:
-                db_count = _redact_one_db(db_path, todo, dry_run)
+                db_count, notes = _redact_one_db(db_path, todo, dry_run)
             except Exception as e:
                 results.append((db_path, -1, str(e)))  # negative = error
                 if stats is not None:
@@ -1278,13 +1326,15 @@ def redact_sqlite(
                 continue
             if stats is not None:
                 stats["checked"] += 1
-            if db_count:
-                results.append((db_path, db_count, None))
+                if notes:
+                    stats["errors"] += 1
+            if db_count or notes:
+                results.append((db_path, db_count, "; ".join(notes) or None))
             if not use_cache:
                 continue
             if db_count and not dry_run:
                 _cache.invalidate_db(db_path)   # rewritten: verify again next time
-            elif not db_count and _cache.db_state(db_path) == state_before:
+            elif not db_count and not notes and _cache.db_state(db_path) == state_before:
                 # Nothing found and nothing changed underneath us while reading.
                 _cache.mark_db_checked(db_path, todo, state_before)
     return sum(c for _, c, _ in results if c > 0), results

@@ -1932,6 +1932,7 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
               + (f" ({unchanged:,} unchanged since the last check)" if unchanged else "")
               + "[/dim]")
     sqlite_errors = 0
+    sqlite_notes = 0
     for db_path, count, err in sqlite_results:
         label = str(db_path)
         # Find which tool owns this DB so the line reads "Codex CLI · logs_2.sqlite"
@@ -1949,7 +1950,12 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
             sqlite_errors += 1
             p(f"  [red]WARN[/red]  {prefix}{label}: {err or 'error'}")
         else:
-            p(f"  [bold green] OK [/bold green]  {prefix}{label}  [dim]→[/dim]  {count:,} replaced")
+            if count:
+                p(f"  [bold green] OK [/bold green]  {prefix}{label}  [dim]→[/dim]  {count:,} replaced")
+            if err:
+                # Cleaned except for tables that could not be processed.
+                sqlite_notes += 1
+                p(f"  [yellow]NOTE[/yellow]  {prefix}{label}: {err}")
 
     # ── summary ───────────────────────────────────────────────────────────────
     elapsed = time.perf_counter() - t_total
@@ -1967,14 +1973,17 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
         f"Files changed:       {total_redacted_files:,}",
         f"Secrets removed:     {n_removed:,} of {n_planned:,} found (distinct values)",
         f"Replacements made:   {total_redactions:,} in files, {sqlite_total:,} in databases",
-        f"Errors:              {len(errors):,} file(s), {sqlite_errors:,} database(s)",
+        f"Errors:              {len(errors):,} file(s), {sqlite_errors:,} database(s) not cleaned, "
+        f"{sqlite_notes:,} database(s) with skipped tables",
         f"Still contain secrets after cleanup: {len(still_exposed):,} file(s)",
     ])
     if RICH:
         g = Table.grid(padding=(0, 3))
         g.add_column(justify="right", style="bold green")
         g.add_column()
-        g.add_row(f"[bold green]✓ Done[/bold green]", f"[dim]redaction took {elapsed:.0f}s[/dim]")
+        _mark = "[bold yellow]! Done[/bold yellow]" if (errors or still_exposed or sqlite_errors or sqlite_notes) \
+            else "[bold green]✓ Done[/bold green]"
+        g.add_row(_mark, f"[dim]redaction took {elapsed:.0f}s[/dim]")
         g.add_row("", "")
         g.add_row(f"[bold green]{n_removed:,}[/bold green]",
                   f"{'secret' if n_removed == 1 else 'secrets'} removed from [bold]{_pl(total_redacted_files, 'file')}[/bold]  "
@@ -1991,8 +2000,19 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
         if still_exposed:
             g.add_row(f"[red]{len(still_exposed)}[/red]",
                       "[red]files still contain secrets after cleanup[/red]")
-        _CON.print(Panel(g, box=box.ROUNDED, padding=(0, 2),
-                          border_style="green", expand=False, title="[bold green]Scrub complete[/bold green]"))
+        if sqlite_errors:
+            g.add_row(f"[red]{sqlite_errors}[/red]",
+                      "[red]database(s) could not be cleaned (see above)[/red]")
+        if sqlite_notes:
+            g.add_row(f"[yellow]{sqlite_notes}[/yellow]",
+                      "[yellow]database(s) cleaned, but some tables were skipped (see above)[/yellow]")
+        _problems = bool(errors or still_exposed or sqlite_errors or sqlite_notes)
+        _CON.print(Panel(
+            g, box=box.ROUNDED, padding=(0, 2), expand=False,
+            border_style="yellow" if _problems else "green",
+            title=("[bold yellow]Scrub finished with problems[/bold yellow]" if _problems
+                   else "[bold green]Scrub complete[/bold green]"),
+        ))
     else:
         print(f"\n✓ Done (redaction took {elapsed:.0f}s)", flush=True)
         print(f"  {_pl(n_removed, 'secret')} removed from {_pl(total_redacted_files, 'file')} ({total_redactions:,} replacements)"
@@ -2004,9 +2024,13 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
             print(f"  {len(errors)} errors", flush=True)
         if still_exposed:
             print(f"  {len(still_exposed)} files still contain secrets after cleanup", flush=True)
+        if sqlite_errors:
+            print(f"  {sqlite_errors} database(s) could not be cleaned (see above)", flush=True)
+        if sqlite_notes:
+            print(f"  {sqlite_notes} database(s) cleaned, but some tables were skipped (see above)", flush=True)
         print(flush=True)
 
-    if errors or still_exposed or sqlite_errors:
+    if errors or still_exposed or sqlite_errors or sqlite_notes:
         return 1
     return 0
 

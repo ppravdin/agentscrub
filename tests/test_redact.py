@@ -694,3 +694,127 @@ class TestSqliteRepeatedValues:
         target = ScanTarget(path=tmp_path, tool="x", display="X")
         total, _ = redact_sqlite({self.SECRET}, [target], dry_run=True, use_cache=False)
         assert total == 2
+
+
+class TestSqliteTableEdgeCases:
+    """Databases in the wild: tables without a rowid, full-text indexes, one bad table."""
+
+    SECRET = "ghp_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+
+    def _target(self, tmp_path: Path) -> ScanTarget:
+        return ScanTarget(path=tmp_path, tool="x", display="X")
+
+    def test_without_rowid_table_is_redacted_and_does_not_abort_the_database(
+        self, tmp_path: Path
+    ) -> None:
+        db = tmp_path / "d.db"
+        con = sqlite3.connect(db)
+        con.execute(
+            "CREATE TABLE ledger (host TEXT NOT NULL, thread TEXT NOT NULL, note TEXT,"
+            " PRIMARY KEY (host, thread)) WITHOUT ROWID"
+        )
+        con.execute("CREATE TABLE plain (id INTEGER PRIMARY KEY, body TEXT)")
+        con.executemany(
+            "INSERT INTO ledger VALUES (?, ?, ?)",
+            [
+                (f"h{i % 3}", f"t{i:04d}", f"n{i} " + (self.SECRET if i % 50 == 0 else "ok"))
+                for i in range(700)
+            ],
+        )
+        con.execute("INSERT INTO plain(body) VALUES (?)", (f"x {self.SECRET}",))
+        con.commit()
+        con.close()
+
+        total, results = redact_sqlite(
+            {self.SECRET}, [self._target(tmp_path)], dry_run=False, use_cache=False
+        )
+        assert total == 14 + 1  # 14 ledger rows (0,50,...,650) + 1 plain row
+        assert results == [(db, 15, None)]  # no error: the rowid-less table did not abort it
+        con = sqlite3.connect(db)
+        assert (
+            con.execute(
+                "SELECT COUNT(*) FROM ledger WHERE note LIKE ?", (f"%{self.SECRET}%",)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            con.execute("SELECT COUNT(*) FROM ledger").fetchone()[0] == 700
+        )  # keys and rows intact
+        assert con.execute(
+            "SELECT host, thread FROM ledger ORDER BY host, thread LIMIT 1"
+        ).fetchone() == ("h0", "t0000")
+        assert self.SECRET not in con.execute("SELECT body FROM plain").fetchone()[0]
+        con.close()
+
+    def test_a_failing_table_is_reported_but_the_rest_is_cleaned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agentscrub.redact as R
+
+        db = tmp_path / "d.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE bad (id INTEGER PRIMARY KEY, body TEXT)")
+        con.execute("CREATE TABLE good (id INTEGER PRIMARY KEY, body TEXT)")
+        for t in ("bad", "good"):
+            con.execute(f"INSERT INTO {t}(body) VALUES (?)", (f"x {self.SECRET}",))
+        con.commit()
+        con.close()
+
+        real = R._redact_table
+
+        def flaky(con, tname, *a, **k):
+            if tname == "bad":
+                raise sqlite3.OperationalError("boom")
+            return real(con, tname, *a, **k)
+
+        monkeypatch.setattr(R, "_redact_table", flaky)
+        stats: dict[str, int] = {}
+        total, results = redact_sqlite(
+            {self.SECRET}, [self._target(tmp_path)], dry_run=False, use_cache=True, stats=stats
+        )
+        assert total == 1  # "good" was cleaned
+        ((path, count, err),) = results
+        assert count == 1 and "table bad skipped: boom" in err
+        assert stats["errors"] == 1
+        con = sqlite3.connect(db)
+        assert self.SECRET not in con.execute("SELECT body FROM good").fetchone()[0]
+        assert (
+            self.SECRET in con.execute("SELECT body FROM bad").fetchone()[0]
+        )  # honestly left, and reported
+        con.close()
+        # a database with skipped tables is not remembered as verified
+        from agentscrub import cache
+
+        assert cache.db_unchecked_secrets(db, {self.SECRET}) == {self.SECRET}
+
+    def test_fts_internal_tables_are_never_modified(self, tmp_path: Path) -> None:
+        db = tmp_path / "s.db"
+        con = sqlite3.connect(db)
+        try:
+            con.execute("CREATE VIRTUAL TABLE docs USING fts5(title, body)")
+        except sqlite3.OperationalError:
+            pytest.skip("this SQLite build has no FTS5")
+        con.execute(
+            "INSERT INTO docs(title, body) VALUES (?, ?)", ("t", f"secret {self.SECRET} here")
+        )
+        con.commit()
+        shadow_before = {
+            t: con.execute(f'SELECT * FROM "{t}"').fetchall()
+            for (t,) in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'docs\\_%' ESCAPE '\\'"
+            ).fetchall()
+        }
+        con.close()
+        assert shadow_before, "expected FTS shadow tables"
+
+        total, results = redact_sqlite(
+            {self.SECRET}, [self._target(tmp_path)], dry_run=False, use_cache=False
+        )
+        assert total == 1 and results[0][2] is None
+        con = sqlite3.connect(db)
+        assert self.SECRET not in con.execute("SELECT body FROM docs").fetchone()[0]
+        assert (
+            con.execute("SELECT COUNT(*) FROM docs WHERE docs MATCH 'here'").fetchone()[0] == 1
+        )  # index still works
+        assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        con.close()
