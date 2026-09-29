@@ -642,3 +642,55 @@ class TestShortTextRedaction:
             res, count = redact_short_text(line)
             assert count == 0
             assert res == line
+
+
+class TestSqliteRepeatedValues:
+    """Apps that re-store a big snapshot on every update must not cost one scan per row."""
+
+    SECRET = "ghp_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+
+    def _db(self, path: Path, values: list[str]) -> None:
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE event (id INTEGER PRIMARY KEY, data TEXT)")
+        con.executemany("INSERT INTO event(data) VALUES (?)", [(v,) for v in values])
+        con.commit()
+        con.close()
+
+    def test_clean_duplicates_never_hide_a_different_value_with_a_secret(
+        self, tmp_path: Path
+    ) -> None:
+        clean = "x" * 4000
+        dirty = "x" * 3990 + " " + self.SECRET  # same length/prefix, but a different value
+        self._db(tmp_path / "e.db", [clean] * 5 + [dirty] + [clean] * 5 + [dirty] * 3)
+        target = ScanTarget(path=tmp_path, tool="x", display="X")
+
+        total, _ = redact_sqlite({self.SECRET}, [target], dry_run=True, use_cache=False)
+        assert total == 4  # every dirty row, duplicates included
+
+        total, _ = redact_sqlite({self.SECRET}, [target], dry_run=False, use_cache=False)
+        assert total == 4
+        con = sqlite3.connect(tmp_path / "e.db")
+        rows = [r[0] for r in con.execute("SELECT data FROM event ORDER BY id")]
+        con.close()
+        assert not any(self.SECRET in r for r in rows)
+        assert rows.count(clean) == 10  # clean values untouched
+
+    def test_repeated_clean_values_are_compared_once(self, tmp_path: Path) -> None:
+        self._db(tmp_path / "e.db", ["y" * 5000] * 200)
+        target = ScanTarget(path=tmp_path, tool="x", display="X")
+
+        class CountingSet(set):
+            passes = 0
+
+            def __iter__(self):
+                CountingSet.passes += 1
+                return super().__iter__()
+
+        redact_sqlite(CountingSet({self.SECRET}), [target], dry_run=True, use_cache=False)
+        assert CountingSet.passes < 10  # not 200: one distinct value, checked once
+
+    def test_short_values_are_still_checked_individually(self, tmp_path: Path) -> None:
+        self._db(tmp_path / "e.db", ["short clean"] * 3 + [f"short {self.SECRET}"] * 2)
+        target = ScanTarget(path=tmp_path, tool="x", display="X")
+        total, _ = redact_sqlite({self.SECRET}, [target], dry_run=True, use_cache=False)
+        assert total == 2

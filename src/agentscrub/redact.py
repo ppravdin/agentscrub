@@ -13,6 +13,7 @@ import stat
 import subprocess
 import tempfile
 import urllib.parse
+from collections.abc import Callable
 from multiprocessing import util as _mp_util
 from pathlib import Path
 
@@ -1126,6 +1127,13 @@ def _open_sqlite(db_path: Path, read_only: bool) -> sqlite3.Connection:
     return sqlite3.connect(str(db_path))
 
 
+# Values at least this long are remembered by hash once found clean. Apps that
+# log every update by re-storing a large snapshot (OpenCode's event table keeps
+# each message's whole diff summary on every update: 26 distinct blobs stored
+# 210 times) then cost one comparison per distinct value, not one per row.
+_DEDUPE_MIN_LEN = 1024
+
+
 def _redact_one_db(db_path: Path, secrets: set[str], dry_run: bool) -> int:
     """Redact (or, if dry_run, count) secrets in one DB. Returns replacements made.
 
@@ -1134,6 +1142,9 @@ def _redact_one_db(db_path: Path, secrets: set[str], dry_run: bool) -> int:
     """
     con = _open_sqlite(db_path, read_only=dry_run)
     try:
+        if not secrets:
+            return 0
+        clean_seen: set[bytes] = set()   # digests of long values already checked clean
         tables = con.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
@@ -1173,7 +1184,18 @@ def _redact_one_db(db_path: Path, secrets: set[str], dry_run: bool) -> int:
                     for i, val in enumerate(row[1:]):
                         if not val or not isinstance(val, str):
                             continue
+                        digest = None
+                        if len(val) >= _DEDUPE_MIN_LEN:
+                            # 128-bit digest: an exact "same value" test, so a
+                            # clean duplicate can never hide a different value.
+                            digest = hashlib.blake2b(
+                                val.encode("utf-8", "surrogatepass"), digest_size=16
+                            ).digest()
+                            if digest in clean_seen:
+                                continue
                         if not any(s in val for s in secrets):
+                            if digest is not None:
+                                clean_seen.add(digest)
                             continue
                         new_val, n = val, 0
                         for s in secrets:
@@ -1202,6 +1224,7 @@ def redact_sqlite(
     only_paths: set[Path] | None = None,
     use_cache: bool = True,
     stats: dict[str, int] | None = None,
+    progress: Callable[[Path, int, int], None] | None = None,
 ) -> tuple[int, list[tuple[Path, int, str | None]]]:
     """Redact text columns in all SQLite DBs. Returns (total, [(path, count, error)]).
 
@@ -1209,6 +1232,9 @@ def redact_sqlite(
     free of these secrets is skipped, and only secrets not yet verified against
     it are searched for. only_paths restricts the pass to specific DBs (used to
     redact just the DBs a preview found secrets in).
+
+    `progress(path, index, total)` is called before each database is examined,
+    so a caller can show what a long pass is doing.
 
     If `stats` is given it is filled with how many databases were examined:
     "checked" (read now), "unchanged" (skipped: verified clean and untouched
@@ -1230,17 +1256,19 @@ def redact_sqlite(
                     continue
                 seen_dbs.add(p)
                 db_paths.append(p)
-        for db_path in sorted(db_paths):
-            if target.excluded(db_path):
-                continue
-            if only_paths is not None and db_path not in only_paths:
-                continue
+        candidates = [
+            d for d in sorted(db_paths)
+            if not target.excluded(d) and (only_paths is None or d in only_paths)
+        ]
+        for n, db_path in enumerate(candidates, 1):
             state_before = _cache.db_state(db_path) if use_cache else None
             todo = _cache.db_unchecked_secrets(db_path, secrets) if use_cache else secrets
             if not todo:
                 if stats is not None:
                     stats["unchanged"] += 1
                 continue   # unchanged since verified clean for every current secret
+            if progress is not None:
+                progress(db_path, n, len(candidates))
             try:
                 db_count = _redact_one_db(db_path, todo, dry_run)
             except Exception as e:

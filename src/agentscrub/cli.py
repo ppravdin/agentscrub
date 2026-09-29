@@ -1763,9 +1763,48 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     p("\n[bold cyan]Backup[/bold cyan]")
 
     db_stats: dict[str, int] = {}
-    _sqlite_preview_total, sqlite_preview_results = redact_sqlite(
-        redactable_secrets, targets, dry_run=True, stats=db_stats
-    )
+
+    def _db_label(path: Path, n: int, total: int) -> str:
+        try:
+            gb = path.stat().st_size / 1e9
+        except OSError:
+            gb = 0.0
+        return f"({n}/{total}) {path.name}  {gb:.1f} GB"
+
+    # Reading every database can take minutes and used to print nothing.
+    t_db = time.perf_counter()
+    if RICH:
+        with Progress(
+            TextColumn("  "),
+            SpinnerColumn(style="yellow"),
+            TextColumn("[dim]checking databases {task.description}[/dim]"),
+            TimeElapsedColumn(),
+            console=_CON,
+            transient=True,
+        ) as _db_prog:
+            _db_task = _db_prog.add_task("", total=None)
+            _sqlite_preview_total, sqlite_preview_results = redact_sqlite(
+                redactable_secrets, targets, dry_run=True, stats=db_stats,
+                progress=lambda path, n, total: _db_prog.update(
+                    _db_task, description=_db_label(path, n, total)
+                ),
+            )
+    else:
+        def _plain_db_progress(path: Path, n: int, total: int) -> None:
+            try:
+                big = path.stat().st_size > 100_000_000
+            except OSError:
+                big = False
+            if big:
+                print(f"  checking database {_db_label(path, n, total)} ...", flush=True)
+
+        _sqlite_preview_total, sqlite_preview_results = redact_sqlite(
+            redactable_secrets, targets, dry_run=True, stats=db_stats,
+            progress=_plain_db_progress,
+        )
+    _n_db = db_stats.get("checked", 0) + db_stats.get("unchanged", 0)
+    if _n_db:
+        p(f"  [dim]{_pl(_n_db, 'database')} checked in {time.perf_counter() - t_db:.0f}s[/dim]")
     sqlite_backup_files: list[Path] = []
     for db_path, count, _err in sqlite_preview_results:
         if count <= 0:
@@ -1777,7 +1816,20 @@ def cmd_scan_or_run(subcmd: str, ns: argparse.Namespace) -> int | None:
     backup_files = [*flagged_redactable, *sqlite_backup_files]
 
     try:
-        backups = backup(targets, max_keep=max_backups, files=backup_files)
+        if RICH:
+            with Progress(
+                TextColumn("  "),
+                SpinnerColumn(style="yellow"),
+                TextColumn(f"[dim]encrypting backup of {_pl(len(backup_files), 'file')}[/dim]"),
+                TimeElapsedColumn(),
+                console=_CON,
+                transient=True,
+            ) as _bk_prog:
+                _bk_prog.add_task("", total=None)
+                backups = backup(targets, max_keep=max_backups, files=backup_files)
+        else:
+            print(f"  encrypting backup of {_pl(len(backup_files), 'file')} ...", flush=True)
+            backups = backup(targets, max_keep=max_backups, files=backup_files)
     except Exception as e:
         p(f"  [red]Backup failed; no files were modified:[/red] {e}")
         _append_to_report(full_report_path, [
